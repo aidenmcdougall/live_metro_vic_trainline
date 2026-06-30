@@ -2,10 +2,17 @@
   <div class="app-shell">
     <Toolbar class="app-toolbar">
       <template #start>
-        <span class="app-title">🚆 V/Line Live Tracker</span>
+        <span class="app-title">🚆 Live Train Tracker</span>
       </template>
       <template #end>
         <div class="toolbar-end">
+          <SelectButton
+            v-model="network"
+            :options="networkOptions"
+            option-label="label"
+            option-value="value"
+            :allow-empty="false"
+          />
           <Tag
             v-if="!error"
             :value="`${vehicles.length} trains`"
@@ -29,19 +36,33 @@
     </Toolbar>
 
     <div class="map-wrapper">
-      <TrainMap :vehicles="vehicles" />
+      <TrainMap :vehicles="vehicles" :color="networkColor" :network="network" />
       <ProgressBar v-if="loading && vehicles.length === 0" mode="indeterminate" class="loading-bar" />
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import Toolbar from 'primevue/toolbar'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import ProgressBar from 'primevue/progressbar'
+import SelectButton from 'primevue/selectbutton'
 import TrainMap from './components/TrainMap.vue'
+
+const networkOptions = [
+  { label: 'V/Line', value: 'vline' },
+  { label: 'Metro',  value: 'metro' },
+]
+
+const NETWORK_COLORS = {
+  vline: '#a855f7',
+  metro: '#3b82f6',
+}
+
+const network = ref('vline')
+const networkColor = computed(() => NETWORK_COLORS[network.value])
 
 const vehicles = ref([])
 const loading = ref(false)
@@ -54,7 +75,7 @@ async function refresh() {
   loading.value = true
   error.value = null
   try {
-    const res = await fetch('/api/vehicles')
+    const res = await fetch(`/api/vehicles?network=${network.value}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     vehicles.value = data.vehicles
@@ -68,9 +89,13 @@ async function refresh() {
   }
 }
 
+watch(network, () => {
+  vehicles.value = []
+  refresh()
+})
+
 onMounted(() => {
   refresh()
-  // API has a 30s cache; poll every 30s
   pollInterval = setInterval(refresh, 30_000)
 })
 

@@ -12,17 +12,45 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  color: {
+    type: String,
+    default: '#a855f7',
+  },
+  network: {
+    type: String,
+    default: 'vline',
+  },
 })
 
 const mapEl = ref(null)
 let map = null
 const markerMap = {}
 
-// Victoria bounds — map starts here
-const VICTORIA_CENTER = [-37.69214941267092, 144.95849150482715]
-const INITIAL_ZOOM = 9
+const METRO_ROUTE_COLORS = {
+  WER: '#f472b6', LAV: '#f472b6', WIL: '#f472b6', SHM: '#f472b6',
+  SUY: '#38bdf8', CBE: '#38bdf8', PKM: '#38bdf8',
+  UFD: '#fbbf24', CGB: '#fbbf24',
+  HBE: '#ef4444', MDD: '#ef4444',
+  LIL: '#1d4ed8', BEG: '#1d4ed8', ALM: '#1d4ed8', GWY: '#1d4ed8',
+  FKN: '#16a34a',
+}
 
-function trainIcon(bearing, carriages = 3) {
+function vehicleColor(v) {
+  if (props.network === 'metro') {
+    const code = v.routeId?.split('-').pop()?.replace(/:/g, '')
+    return METRO_ROUTE_COLORS[code] ?? props.color
+  }
+  return props.color
+}
+
+const NETWORK_VIEWS = {
+  vline: { center: [-37.69214941267092, 144.95849150482715], zoom: 9 },
+  metro: { center: [-37.86044296365716, 144.9438085965693],  zoom: 11 },
+}
+
+const INITIAL_ZOOM = NETWORK_VIEWS.vline.zoom
+
+function trainIcon(bearing, carriages = 3, color = props.color) {
   // bearing - 90 maps the right end of the SVG to the direction of travel
   const rotation = (bearing ?? 0) - 90
   const zoom = map?.getZoom() ?? INITIAL_ZOOM
@@ -43,19 +71,19 @@ function trainIcon(bearing, carriages = 3) {
 
   const rects = Array.from({ length: carriages }, (_, i) => {
     const x = ox + i * (carW + gap)
-    return `<rect x="${x}" y="${oy}" width="${carW}" height="${carH}" rx="${Math.max(1, carH * 0.25)}" fill="#a855f7"/>`
+    return `<rect x="${x}" y="${oy}" width="${carW}" height="${carH}" rx="${Math.max(1, carH * 0.25)}" fill="${color}"/>`
   }).join('')
 
   // Triangle at right end — points in direction of travel after rotation
   const ax = ox + carriagesW + arrowGap
-  const arrow = `<polygon points="${ax},${oy} ${ax},${oy + carH} ${ax + arrowW},${oy + carH / 2}" fill="#a855f7"/>`
+  const arrow = `<polygon points="${ax},${oy} ${ax},${oy + carH} ${ax + arrowW},${oy + carH / 2}" fill="${color}"/>`
 
   return L.divIcon({
     className: '',
     html: `<svg xmlns="http://www.w3.org/2000/svg"
                viewBox="0 0 ${box} ${box}"
                width="${box}" height="${box}"
-               style="display:block;transform:rotate(${rotation}deg);transform-origin:${box/2}px ${box/2}px;filter:drop-shadow(0 0 3px #a855f7);">
+               style="display:block;transform:rotate(${rotation}deg);transform-origin:${box/2}px ${box/2}px;filter:drop-shadow(0 0 3px ${color});">
              ${rects}${arrow}
            </svg>`,
     iconSize: [box, box],
@@ -63,6 +91,7 @@ function trainIcon(bearing, carriages = 3) {
     popupAnchor: [0, -(box / 2 + 4)],
   })
 }
+
 
 function popupHtml(v) {
   const time = v.timestamp
@@ -76,9 +105,8 @@ function popupHtml(v) {
     <div class="train-popup">
       <strong>${v.label ?? v.id}</strong>
       <table>
-        <tr><td>Route</td><td>${v.routeId ?? '—'}</td></tr>
+<tr><td>Route</td><td>${v.routeId ?? '—'}</td></tr>
         <tr><td>Trip</td><td>${v.tripId ?? '—'}</td></tr>
-        <tr><td>Speed</td><td>${v.speed != null ? v.speed + ' km/h' : '—'}</td></tr>
         <tr><td>Bearing</td><td>${v.bearing != null ? v.bearing + '°' : '—'}</td></tr>
         <tr><td>Updated</td><td>${time}</td></tr>
       </table>
@@ -97,13 +125,14 @@ function syncMarkers(vehicles) {
   }
 
   for (const v of vehicles) {
-    const carriages = v.tripId?.includes('BDE') ? 6 : 3
+    const carriages = props.network === 'metro' ? 6 : (v.tripId?.includes('BDE') ? 6 : 3)
+    const color = vehicleColor(v)
     if (markerMap[v.id]) {
       markerMap[v.id].setLatLng([v.lat, v.lng])
-      markerMap[v.id].setIcon(trainIcon(v.bearing, carriages))
+      markerMap[v.id].setIcon(trainIcon(v.bearing, carriages, color))
       markerMap[v.id].setPopupContent(popupHtml(v))
     } else {
-      markerMap[v.id] = L.marker([v.lat, v.lng], { icon: trainIcon(v.bearing, carriages) })
+      markerMap[v.id] = L.marker([v.lat, v.lng], { icon: trainIcon(v.bearing, carriages, color) })
         .bindPopup(popupHtml(v))
         .addTo(map)
     }
@@ -111,11 +140,17 @@ function syncMarkers(vehicles) {
 }
 
 watch(() => props.vehicles, syncMarkers)
+watch(() => props.color, () => syncMarkers(props.vehicles))
+watch(() => props.network, (n) => {
+  const { center, zoom } = NETWORK_VIEWS[n] ?? NETWORK_VIEWS.vline
+  map?.flyTo(center, zoom, { animate: true, duration: 1.2 })
+})
 
 onMounted(() => {
+  const initView = NETWORK_VIEWS[props.network] ?? NETWORK_VIEWS.vline
   map = L.map(mapEl.value, {
-    center: VICTORIA_CENTER,
-    zoom: INITIAL_ZOOM,
+    center: initView.center,
+    zoom: initView.zoom,
     zoomControl: true,
   })
 
