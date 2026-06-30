@@ -92,6 +92,8 @@ onUnmounted(() => clearInterval(pollInterval))
   border-left: none !important;
   border-right: none !important;
   border-top: none !important;
+  background: #0f0f0f !important;
+  border-bottom-color: #2a2a2a !important;
 }
 
 .app-title {

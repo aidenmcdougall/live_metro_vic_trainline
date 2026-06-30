@@ -23,16 +23,20 @@ const VICTORIA_CENTER = [-37.69214941267092, 144.95849150482715]
 const INITIAL_ZOOM = 9
 
 function trainIcon(bearing, carriages = 3) {
-  const rotation = (bearing ?? 0) + 90
+  // bearing - 90 maps the right end of the SVG to the direction of travel
+  const rotation = (bearing ?? 0) - 90
   const zoom = map?.getZoom() ?? INITIAL_ZOOM
 
-  // Scale so carriages are ~80px total at zoom 13, halving every 4 zoom levels
   const scale = Math.pow(2, (zoom - 13) / 4)
-  const carW = Math.max(4, Math.round(19 * scale))
-  const carH = Math.max(2, Math.round(8  * scale))
-  const gap  = Math.max(1, Math.round(3  * scale))
+  const carW    = Math.max(2, Math.round(5 * scale))
+  const carH    = Math.max(1, Math.round(2 * scale))
+  const gap     = Math.max(1, Math.round(1 * scale))
+  const arrowW  = Math.max(2, Math.round(carH * 0.4))
+  const arrowGap = Math.max(1, Math.round(gap * 0.5))
 
-  const totalW = carriages * carW + (carriages - 1) * gap
+  const carriagesW = carriages * carW + (carriages - 1) * gap
+  const totalW = carriagesW + arrowGap + arrowW
+
   const box = Math.ceil(Math.sqrt(totalW * totalW + carH * carH)) + 2
   const ox = (box - totalW) / 2
   const oy = (box - carH) / 2
@@ -42,13 +46,17 @@ function trainIcon(bearing, carriages = 3) {
     return `<rect x="${x}" y="${oy}" width="${carW}" height="${carH}" rx="${Math.max(1, carH * 0.25)}" fill="#a855f7"/>`
   }).join('')
 
+  // Triangle at right end — points in direction of travel after rotation
+  const ax = ox + carriagesW + arrowGap
+  const arrow = `<polygon points="${ax},${oy} ${ax},${oy + carH} ${ax + arrowW},${oy + carH / 2}" fill="#a855f7"/>`
+
   return L.divIcon({
     className: '',
     html: `<svg xmlns="http://www.w3.org/2000/svg"
                viewBox="0 0 ${box} ${box}"
                width="${box}" height="${box}"
                style="display:block;transform:rotate(${rotation}deg);transform-origin:${box/2}px ${box/2}px;">
-             ${rects}
+             ${rects}${arrow}
            </svg>`,
     iconSize: [box, box],
     iconAnchor: [box / 2, box / 2],
@@ -133,6 +141,26 @@ onUnmounted(() => {
   height: 100%;
   width: 100%;
   background: #1a1a2e;
+}
+
+/* Leaflet controls */
+.leaflet-control-zoom a {
+  background: #1a1a1a !important;
+  color: #e2e8f0 !important;
+  border-color: #333 !important;
+}
+
+.leaflet-control-zoom a:hover {
+  background: #2a2a2a !important;
+}
+
+.leaflet-control-attribution {
+  background: rgba(15, 15, 15, 0.8) !important;
+  color: #6b7280 !important;
+}
+
+.leaflet-control-attribution a {
+  color: #9ca3af !important;
 }
 
 /* Dark popup */
