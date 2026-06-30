@@ -55,7 +55,7 @@ function trainIcon(bearing, carriages = 3) {
     html: `<svg xmlns="http://www.w3.org/2000/svg"
                viewBox="0 0 ${box} ${box}"
                width="${box}" height="${box}"
-               style="display:block;transform:rotate(${rotation}deg);transform-origin:${box/2}px ${box/2}px;">
+               style="display:block;transform:rotate(${rotation}deg);transform-origin:${box/2}px ${box/2}px;filter:drop-shadow(0 0 3px #a855f7);">
              ${rects}${arrow}
            </svg>`,
     iconSize: [box, box],
@@ -97,7 +97,7 @@ function syncMarkers(vehicles) {
   }
 
   for (const v of vehicles) {
-    const carriages = v.carriages ?? 3
+    const carriages = v.tripId?.includes('BDE') ? 6 : 3
     if (markerMap[v.id]) {
       markerMap[v.id].setLatLng([v.lat, v.lng])
       markerMap[v.id].setIcon(trainIcon(v.bearing, carriages))
