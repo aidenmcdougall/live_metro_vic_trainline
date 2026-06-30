@@ -1,0 +1,13 @@
+{
+  "name": "live-metro-vic-trainline",
+  "private": true,
+  "workspaces": ["server", "client"],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace=server\" \"npm run dev --workspace=client\"",
+    "server": "npm run dev --workspace=server",
+    "client": "npm run dev --workspace=client"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  }
+}
