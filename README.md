@@ -1,6 +1,6 @@
-# 🚆 Live Victoria Train Tracker
+# 🚆 Live Victorian Train Tracker
 
-A real-time map of Victoria's train network, showing live positions for both Metro and V/Line services using the [Transport Victoria GTFS Realtime API](https://opendata.transport.vic.gov.au/).
+A real-time (every 30s) map of Victoria's train network, showing live positions for both Metro and V/Line services using the [Transport Victoria GTFS Realtime API](https://opendata.transport.vic.gov.au/).
 
 ## Features
 
