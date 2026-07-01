@@ -50,8 +50,7 @@ const NETWORK_VIEWS = {
 
 const INITIAL_ZOOM = NETWORK_VIEWS.vline.zoom
 
-function trainIcon(bearing, carriages = 3, color = props.color) {
-  // bearing - 90 maps the right end of the SVG to the direction of travel
+function trainIcon(bearing, carriages = 3, color = props.color, delay = null, cancelled = false) {
   const rotation = (bearing ?? 0) - 90
   const zoom = map?.getZoom() ?? INITIAL_ZOOM
 
@@ -69,23 +68,25 @@ function trainIcon(bearing, carriages = 3, color = props.color) {
   const ox = (box - totalW) / 2
   const oy = (box - carH) / 2
 
+  const fillColor = cancelled ? '#6b7280' : color
   const rects = Array.from({ length: carriages }, (_, i) => {
     const x = ox + i * (carW + gap)
-    return `<rect x="${x}" y="${oy}" width="${carW}" height="${carH}" rx="${Math.max(1, carH * 0.25)}" fill="${color}"/>`
+    return `<rect x="${x}" y="${oy}" width="${carW}" height="${carH}" rx="${Math.max(1, carH * 0.25)}" fill="${fillColor}"/>`
   }).join('')
 
-  // Triangle at right end — points in direction of travel after rotation
   const ax = ox + carriagesW + arrowGap
-  const arrow = `<polygon points="${ax},${oy} ${ax},${oy + carH} ${ax + arrowW},${oy + carH / 2}" fill="${color}"/>`
+  const arrow = `<polygon points="${ax},${oy} ${ax},${oy + carH} ${ax + arrowW},${oy + carH / 2}" fill="${fillColor}"/>`
 
   return L.divIcon({
     className: '',
-    html: `<svg xmlns="http://www.w3.org/2000/svg"
-               viewBox="0 0 ${box} ${box}"
-               width="${box}" height="${box}"
-               style="display:block;transform:rotate(${rotation}deg);transform-origin:${box/2}px ${box/2}px;filter:drop-shadow(0 0 3px ${color});">
-             ${rects}${arrow}
-           </svg>`,
+    html: `<div style="opacity:${cancelled ? 0.5 : 1}">
+             <svg xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 ${box} ${box}"
+                  width="${box}" height="${box}"
+                  style="display:block;transform:rotate(${rotation}deg);transform-origin:${box/2}px ${box/2}px;filter:drop-shadow(0 0 3px ${fillColor});">
+               ${rects}${arrow}
+             </svg>
+           </div>`,
     iconSize: [box, box],
     iconAnchor: [box / 2, box / 2],
     popupAnchor: [0, -(box / 2 + 4)],
@@ -101,11 +102,19 @@ function popupHtml(v) {
         second: '2-digit',
       })
     : '—'
+  const delayMins = v.delay != null ? Math.round(v.delay / 60) : null
+  const statusCell = v.cancelled
+    ? `<td class="status--cancelled">Cancelled</td>`
+    : delayMins != null && delayMins >= 1
+    ? `<td class="status--delayed">${delayMins} Minutes Late</td>`
+    : `<td class="status--ontime">On time</td>`
+
   return `
     <div class="train-popup">
-      <strong>${v.label ?? v.id}</strong>
+      <strong>${v.vehicleId ?? '—'}</strong>
       <table>
-<tr><td>Route</td><td>${v.routeId ?? '—'}</td></tr>
+        <tr><td>Status</td>${statusCell}</tr>
+        <tr><td>Route</td><td>${v.routeId ?? '—'}</td></tr>
         <tr><td>Trip</td><td>${v.tripId ?? '—'}</td></tr>
         <tr><td>Bearing</td><td>${v.bearing != null ? v.bearing + '°' : '—'}</td></tr>
         <tr><td>Updated</td><td>${time}</td></tr>
@@ -127,12 +136,13 @@ function syncMarkers(vehicles) {
   for (const v of vehicles) {
     const carriages = props.network === 'metro' ? 6 : (v.tripId?.includes('BDE') ? 6 : 3)
     const color = vehicleColor(v)
+    const icon = trainIcon(v.bearing, carriages, color, v.delay, v.cancelled)
     if (markerMap[v.id]) {
       markerMap[v.id].setLatLng([v.lat, v.lng])
-      markerMap[v.id].setIcon(trainIcon(v.bearing, carriages, color))
+      markerMap[v.id].setIcon(icon)
       markerMap[v.id].setPopupContent(popupHtml(v))
     } else {
-      markerMap[v.id] = L.marker([v.lat, v.lng], { icon: trainIcon(v.bearing, carriages, color) })
+      markerMap[v.id] = L.marker([v.lat, v.lng], { icon })
         .bindPopup(popupHtml(v))
         .addTo(map)
     }
@@ -230,4 +240,8 @@ onUnmounted(() => {
   color: #6b7280;
   white-space: nowrap;
 }
+
+.status--ontime  { color: #4ade80; }
+.status--delayed { color: #fbbf24; font-weight: 600; }
+.status--cancelled { color: #f87171; font-weight: 600; }
 </style>

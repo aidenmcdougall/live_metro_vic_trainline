@@ -16,6 +16,11 @@ const API_URLS = {
   metro: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/metro/vehicle-positions',
 }
 
+const TRIP_UPDATE_URLS = {
+  vline: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/vline/trip-updates',
+  metro: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/metro/trip-updates',
+}
+
 app.get('/api/vehicles', async (_req, res) => {
   const network = _req.query.network === 'metro' ? 'metro' : 'vline'
   const apiUrl = API_URLS[network]
@@ -47,7 +52,7 @@ app.get('/api/vehicles', async (_req, res) => {
         speed: e.vehicle.position.speed != null
           ? Math.round(e.vehicle.position.speed * 3.6)
           : null,
-        label: e.vehicle.vehicle?.label ?? null,
+        vehicleId: e.vehicle.vehicle?.id ?? null,
         timestamp: e.vehicle.timestamp ? Number(e.vehicle.timestamp) : null,
       }))
 
@@ -62,6 +67,43 @@ app.get('/api/vehicles', async (_req, res) => {
       console.error('Error:', err.message)
     }
     res.status(502).json({ error: 'Failed to fetch vehicle positions from upstream API' })
+  }
+})
+
+app.get('/api/trip-updates', async (_req, res) => {
+  const network = _req.query.network === 'metro' ? 'metro' : 'vline'
+  const apiUrl = TRIP_UPDATE_URLS[network]
+  const apiKey = process.env.API_KEY
+
+  try {
+    const response = await axios.get(apiUrl, {
+      headers: apiKey ? { KeyId: apiKey, 'Ocp-Apim-Subscription-Key': apiKey } : {},
+      responseType: 'arraybuffer',
+    })
+
+    const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
+      new Uint8Array(response.data)
+    )
+
+    const updates = {}
+    for (const e of feed.entity) {
+      const tu = e.tripUpdate
+      if (!tu?.trip?.tripId) continue
+      const sr = tu.trip.scheduleRelationship
+      const cancelled = sr === 3 || sr === 'CANCELED' || sr === 'CANCELLED'
+      const stu = tu.stopTimeUpdate?.[0]
+      const delay = stu?.arrival?.delay ?? stu?.departure?.delay ?? null
+      updates[tu.trip.tripId] = { delay: delay != null ? Number(delay) : null, cancelled }
+    }
+
+    res.json({ updates })
+  } catch (err) {
+    if (err.response) {
+      console.error('Trip updates upstream error:', err.response.status)
+    } else {
+      console.error('Trip updates error:', err.message)
+    }
+    res.status(502).json({ error: 'Failed to fetch trip updates' })
   }
 })
 
