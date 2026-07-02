@@ -100,7 +100,6 @@ app.get('/api/trip-updates', async (_req, res) => {
   } catch (err) {
     if (err.response) {
       console.error('Trip updates upstream error:', err.response.status)
-    } else {
       console.error('Trip updates error:', err.message)
     }
     res.status(502).json({ error: 'Failed to fetch trip updates' })

@@ -6,7 +6,6 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-
 const props = defineProps({
   vehicles: {
     type: Array,
@@ -20,7 +19,13 @@ const props = defineProps({
     type: String,
     default: 'vline',
   },
+  selectedId: {
+    type: String,
+    default: null,
+  },
 })
+
+const emit = defineEmits(['train-selected'])
 
 const mapEl = ref(null)
 let map = null
@@ -94,38 +99,14 @@ function trainIcon(bearing, carriages = 3, color = props.color, delay = null, ca
 }
 
 
-function popupHtml(v) {
-  const time = v.timestamp
-    ? new Date(v.timestamp * 1000).toLocaleTimeString('en-AU', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      })
-    : '—'
-  const delayMins = v.delay != null ? Math.round(v.delay / 60) : null
-  const statusCell = v.cancelled
-    ? `<td class="status--cancelled">Cancelled</td>`
-    : delayMins != null && delayMins >= 1
-    ? `<td class="status--delayed">${delayMins} Minutes Late</td>`
-    : `<td class="status--ontime">On time</td>`
 
-  return `
-    <div class="train-popup">
-      <strong>${v.vehicleId ?? '—'}</strong>
-      <table>
-        <tr><td>Status</td>${statusCell}</tr>
-        <tr><td>Route</td><td>${v.routeId ?? '—'}</td></tr>
-        <tr><td>Trip</td><td>${v.tripId ?? '—'}</td></tr>
-        <tr><td>Bearing</td><td>${v.bearing != null ? v.bearing + '°' : '—'}</td></tr>
-        <tr><td>Updated</td><td>${time}</td></tr>
-      </table>
-    </div>`
+function idPopupHtml(vehicleId) {
+  return `<div class="train-id-popup">${vehicleId ?? '—'}</div>`
 }
 
 function syncMarkers(vehicles) {
   const incoming = new Set(vehicles.map(v => v.id))
 
-  // Remove stale markers
   for (const id of Object.keys(markerMap)) {
     if (!incoming.has(id)) {
       markerMap[id].remove()
@@ -140,17 +121,37 @@ function syncMarkers(vehicles) {
     if (markerMap[v.id]) {
       markerMap[v.id].setLatLng([v.lat, v.lng])
       markerMap[v.id].setIcon(icon)
-      markerMap[v.id].setPopupContent(popupHtml(v))
+      markerMap[v.id].setPopupContent(idPopupHtml(v.vehicleId))
     } else {
       markerMap[v.id] = L.marker([v.lat, v.lng], { icon })
-        .bindPopup(popupHtml(v))
+        .bindPopup(idPopupHtml(v.vehicleId), { autoPan: false, closeButton: false })
+        .on('click', (e) => { L.DomEvent.stopPropagation(e); emit('train-selected', v.id) })
         .addTo(map)
     }
   }
+
+  // Re-open popup for selected marker in case setIcon closed it
+  if (props.selectedId && markerMap[props.selectedId]) {
+    markerMap[props.selectedId].openPopup()
+  }
 }
+
+function focusVehicle(vehicleId) {
+  const marker = markerMap[vehicleId]
+  if (!marker) return
+  const targetZoom = Math.max(map.getZoom(), 14)
+  map.flyTo(marker.getLatLng(), targetZoom, { animate: true, duration: 1 })
+  setTimeout(() => emit('train-selected', vehicleId), 1100)
+}
+
+defineExpose({ focusVehicle })
 
 watch(() => props.vehicles, syncMarkers)
 watch(() => props.color, () => syncMarkers(props.vehicles))
+watch(() => props.selectedId, (newId, oldId) => {
+  if (oldId && markerMap[oldId]) markerMap[oldId].closePopup()
+  if (newId && markerMap[newId]) markerMap[newId].openPopup()
+})
 watch(() => props.network, (n) => {
   const { center, zoom } = NETWORK_VIEWS[n] ?? NETWORK_VIEWS.vline
   map?.flyTo(center, zoom, { animate: true, duration: 1.2 })
@@ -161,10 +162,12 @@ onMounted(() => {
   map = L.map(mapEl.value, {
     center: initView.center,
     zoom: initView.zoom,
-    zoomControl: true,
+    zoomControl: false,
   })
+  L.control.zoom({ position: 'bottomright' }).addTo(map)
 
   map.on('zoomend', () => syncMarkers(props.vehicles))
+  map.on('click', () => emit('train-selected', null))
 
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
@@ -208,40 +211,60 @@ onUnmounted(() => {
   color: #9ca3af !important;
 }
 
-/* Dark popup */
+/* Selected train ID popup */
 .leaflet-popup-content-wrapper {
-  background: #1e2235;
-  color: #e2e8f0;
-  border: 1px solid rgba(255,255,255,0.1);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  background: rgba(10, 10, 16, 0.92) !important;
+  border: 1px solid rgba(255,255,255,0.12) !important;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.6) !important;
+  border-radius: 6px !important;
+  padding: 0 !important;
 }
 
-.leaflet-popup-tip {
-  background: #1e2235;
+.leaflet-popup-content {
+  margin: 0 !important;
 }
 
-.train-popup strong {
-  display: block;
-  font-size: 1rem;
-  margin-bottom: 6px;
+.leaflet-popup-tip-container {
+  display: none;
 }
 
-.train-popup table {
-  border-collapse: collapse;
-  font-size: 0.82rem;
-  width: 100%;
+/* Custom arrow — ::before draws the border, ::after fills over it */
+.leaflet-popup-content-wrapper {
+  position: relative;
+  overflow: visible !important;
 }
 
-.train-popup td {
-  padding: 2px 6px;
+.leaflet-popup-content-wrapper::before {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-top: 8px solid rgba(255,255,255,0.18);
 }
 
-.train-popup td:first-child {
-  color: #6b7280;
+.leaflet-popup-content-wrapper::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top: 7px solid rgba(10, 10, 16, 0.92);
+}
+
+.train-id-popup {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  padding: 5px 10px;
   white-space: nowrap;
 }
 
-.status--ontime  { color: #4ade80; }
-.status--delayed { color: #fbbf24; font-weight: 600; }
-.status--cancelled { color: #f87171; font-weight: 600; }
+.leaflet-popup-close-button {
+  display: none !important;
+}
 </style>

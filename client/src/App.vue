@@ -36,7 +36,7 @@
     </Toolbar>
 
     <div class="map-wrapper">
-      <TrainMap :vehicles="vehicles" :color="networkColor" :network="network" />
+      <TrainMap ref="trainMapRef" :vehicles="vehicles" :color="networkColor" :network="network" :selected-id="selectedVehicleId" @train-selected="onTrainSelected" />
       <ProgressBar v-if="loading && vehicles.length === 0" mode="indeterminate" class="loading-bar" />
 
       <div class="delay-panel" v-if="delayedVehicles.length">
@@ -47,6 +47,7 @@
             :key="v.id"
             class="delay-row"
             :class="{ 'delay-row--cancelled': v.cancelled }"
+            @click="trainMapRef?.focusVehicle(v.id)"
           >
             <span class="delay-row__label">{{ v.vehicleId ?? '—' }}</span>
             <span class="delay-row__sep">·</span>
@@ -58,6 +59,62 @@
           </div>
         </div>
       </div>
+
+      <!-- Right detail panel -->
+      <Transition name="panel-slide">
+        <div v-if="selectedVehicle" class="train-detail-panel">
+          <div class="tdp-image-wrap" v-if="selectedFleet?.type === 'VLocity'">
+            <img src="/VLocity.jpg" alt="VLocity" class="tdp-image" />
+            <button class="tdp-close tdp-close--on-image" @click="selectedVehicleId = null">✕</button>
+          </div>
+
+          <div class="tdp-header" :class="{ 'tdp-header--no-top': selectedFleet?.type === 'VLocity' }">
+            <div class="tdp-header-main">
+              <div class="tdp-vehicle-id">{{ selectedVehicle.vehicleId ?? selectedVehicle.tripId ?? '—' }}</div>
+              <template v-if="selectedFleet">
+                <div class="tdp-fleet-row">
+                  <div class="tdp-fleet-badge">{{ selectedFleet.type }}</div>
+                  <div v-if="selectedFleet.set" class="tdp-fleet-set">{{ selectedFleet.set }}</div>
+                </div>
+                <div class="tdp-fleet-desc">{{ selectedFleet.meta.description }}</div>
+              </template>
+            </div>
+            <button class="tdp-close" v-if="selectedFleet?.type !== 'VLocity'" @click="selectedVehicleId = null">✕</button>
+          </div>
+
+          <div v-if="selectedFleet" class="tdp-consist">
+            <div class="tdp-section-label">Consist</div>
+            <div class="tdp-consist-list">{{ selectedFleet.consist.join(' · ') }}</div>
+          </div>
+
+          <div class="tdp-fields">
+            <div class="tdp-row">
+              <span class="tdp-key">Status</span>
+              <span :class="['tdp-val', tdpStatusClass]">{{ tdpStatusText }}</span>
+            </div>
+            <div class="tdp-row">
+              <span class="tdp-key">Route</span>
+              <span class="tdp-val">{{ routeCode(selectedVehicle.routeId) }}</span>
+            </div>
+            <div class="tdp-row">
+              <span class="tdp-key">Trip</span>
+              <span class="tdp-val tdp-val--mono">{{ selectedVehicle.tripId ?? '—' }}</span>
+            </div>
+            <div v-if="selectedVehicle.speed != null" class="tdp-row">
+              <span class="tdp-key">Speed</span>
+              <span class="tdp-val">{{ selectedVehicle.speed }} km/h</span>
+            </div>
+            <div class="tdp-row">
+              <span class="tdp-key">Bearing</span>
+              <span class="tdp-val">{{ selectedVehicle.bearing != null ? selectedVehicle.bearing + '°' : '—' }}</span>
+            </div>
+            <div class="tdp-row">
+              <span class="tdp-key">Updated</span>
+              <span class="tdp-val">{{ tdpUpdatedTime }}</span>
+            </div>
+          </div>
+        </div>
+      </Transition>
     </div>
   </div>
 </template>
@@ -70,6 +127,8 @@ import Tag from 'primevue/tag'
 import ProgressBar from 'primevue/progressbar'
 import SelectButton from 'primevue/selectbutton'
 import TrainMap from './components/TrainMap.vue'
+import { getFleetInfo } from './data/metro-fleet.js'
+import { getVLineFleetInfo } from './data/vline-fleet.js'
 
 const networkOptions = [
   { label: 'V/Line', value: 'vline' },
@@ -81,6 +140,7 @@ const NETWORK_COLORS = {
   metro: '#3b82f6',
 }
 
+const trainMapRef = ref(null)
 const network = ref('vline')
 const networkColor = computed(() => NETWORK_COLORS[network.value])
 
@@ -97,6 +157,47 @@ const delayedVehicles = computed(() => {
       return (b.delay ?? 0) - (a.delay ?? 0)
     })
 })
+
+const selectedVehicleId = ref(null)
+
+const selectedVehicle = computed(() =>
+  vehicles.value.find(v => v.id === selectedVehicleId.value) ?? null
+)
+
+const selectedFleet = computed(() => {
+  if (!selectedVehicle.value) return null
+  if (network.value === 'metro') return getFleetInfo(selectedVehicle.value.vehicleId)
+  if (network.value === 'vline') return getVLineFleetInfo(selectedVehicle.value.vehicleId)
+  return null
+})
+
+const tdpStatusClass = computed(() => {
+  const v = selectedVehicle.value
+  if (!v) return ''
+  if (v.cancelled) return 'tdp-val--cancelled'
+  if (v.delay != null && v.delay >= 60) return 'tdp-val--delayed'
+  return 'tdp-val--ontime'
+})
+
+const tdpStatusText = computed(() => {
+  const v = selectedVehicle.value
+  if (!v) return '—'
+  if (v.cancelled) return 'Cancelled'
+  if (v.delay != null && v.delay >= 60) return `+${Math.round(v.delay / 60)} min late`
+  return 'On time'
+})
+
+const tdpUpdatedTime = computed(() => {
+  const ts = selectedVehicle.value?.timestamp
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleTimeString('en-AU', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  })
+})
+
+function onTrainSelected(id) {
+  selectedVehicleId.value = id
+}
 
 const vehicles = ref([])
 const loading = ref(false)
@@ -237,8 +338,12 @@ onUnmounted(() => clearInterval(pollInterval))
   font-size: 0.8rem;
 }
 
+.delay-row {
+  cursor: pointer;
+}
+
 .delay-row:hover {
-  background: rgba(255,255,255,0.04);
+  background: rgba(255,255,255,0.07);
 }
 
 .delay-row__label {
@@ -272,4 +377,199 @@ onUnmounted(() => clearInterval(pollInterval))
 
 .badge--delayed   { background: #92400e; color: #fbbf24; }
 .badge--cancelled { background: #7f1d1d; color: #fca5a5; }
+
+/* Left detail panel */
+.panel-slide-enter-active,
+.panel-slide-leave-active {
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.panel-slide-enter-from,
+.panel-slide-leave-to {
+  transform: translateX(calc(-100% - 24px));
+  opacity: 0;
+}
+
+.train-detail-panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  bottom: 12px;
+  width: 280px;
+  background: rgba(10, 10, 16, 0.95);
+  backdrop-filter: blur(16px);
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 8px 40px rgba(0,0,0,0.55);
+  z-index: 1001;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.tdp-image-wrap {
+  position: relative;
+  width: 100%;
+  height: 160px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.tdp-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.tdp-close--on-image {
+  position: absolute !important;
+  top: 10px;
+  right: 10px;
+  background: rgba(0,0,0,0.5) !important;
+  backdrop-filter: blur(4px);
+  color: #e2e8f0 !important;
+}
+
+.tdp-close--on-image:hover {
+  background: rgba(0,0,0,0.75) !important;
+}
+
+.tdp-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 18px 14px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+.tdp-header--no-top {
+  padding-top: 14px;
+}
+
+.tdp-header-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.tdp-vehicle-id {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  word-break: break-all;
+  line-height: 1.3;
+  margin-bottom: 8px;
+}
+
+.tdp-fleet-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+}
+
+.tdp-fleet-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.tdp-fleet-set {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.tdp-fleet-desc {
+  font-size: 0.72rem;
+  color: #4b5563;
+}
+
+.tdp-close {
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.06);
+  border: none;
+  color: #6b7280;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+  margin-top: 2px;
+}
+
+.tdp-close:hover {
+  background: rgba(255,255,255,0.12);
+  color: #e2e8f0;
+}
+
+.tdp-consist {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.tdp-section-label {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #374151;
+  margin-bottom: 6px;
+}
+
+.tdp-consist-list {
+  font-size: 0.76rem;
+  color: #6b7280;
+  line-height: 1.7;
+  word-break: break-all;
+}
+
+.tdp-fields {
+  padding: 8px 0;
+}
+
+.tdp-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 5px 14px;
+  font-size: 0.8rem;
+}
+
+.tdp-row:hover {
+  background: rgba(255,255,255,0.03);
+}
+
+.tdp-key {
+  color: #4b5563;
+  flex-shrink: 0;
+  margin-right: 10px;
+}
+
+.tdp-val {
+  color: #d1d5db;
+  text-align: right;
+}
+
+.tdp-val--mono {
+  font-size: 0.7rem;
+  color: #6b7280;
+  word-break: break-all;
+  text-align: right;
+}
+
+.tdp-val--ontime   { color: #4ade80; }
+.tdp-val--delayed  { color: #fbbf24; font-weight: 600; }
+.tdp-val--cancelled { color: #f87171; font-weight: 600; }
 </style>
