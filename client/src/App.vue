@@ -39,9 +39,16 @@
       <TrainMap ref="trainMapRef" :vehicles="vehicles" :stops="stops" :color="networkColor" :network="network" :selected-id="selectedVehicleId" :route-polyline="routePolyline" @train-selected="onTrainSelected" />
       <ProgressBar v-if="loading && vehicles.length === 0" mode="indeterminate" class="loading-bar" />
 
-      <div class="delay-panel" v-if="delayedVehicles.length">
-        <div class="delay-panel__title">Delays</div>
-        <div class="delay-panel__list">
+      <div class="delay-panel" :class="{ 'delay-panel--collapsed': delayPanelCollapsed }" v-if="delayedVehicles.length">
+        <div class="delay-panel__title" @click="delayPanelCollapsed = !delayPanelCollapsed">
+          <span class="delay-panel__title-text">
+            <span v-if="delayPanelCollapsed">⚠</span>
+            <span v-else>Delays</span>
+          </span>
+          <span class="delay-panel__count" v-if="delayPanelCollapsed">{{ delayedVehicles.length }}</span>
+          <span class="delay-panel__toggle" :class="{ 'delay-panel__toggle--open': !delayPanelCollapsed }">›</span>
+        </div>
+        <div class="delay-panel__list" v-show="!delayPanelCollapsed">
           <div
             v-for="v in delayedVehicles"
             :key="v.id"
@@ -401,6 +408,7 @@ const routePolyline = computed(() => {
 const loading = ref(false)
 const error = ref(null)
 const lastUpdated = ref(null)
+const delayPanelCollapsed = ref(false)
 
 let pollInterval = null
 
@@ -565,18 +573,73 @@ onUnmounted(() => clearInterval(pollInterval))
   min-width: 160px;
   max-height: calc(100vh - 100px);
   overflow-y: auto;
-  padding: 10px 0 6px;
+  padding: 4px 0 0;
+}
+
+.delay-panel--collapsed {
+  min-width: unset;
+  padding: 0;
 }
 
 .delay-panel__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #6b7280;
-  padding: 0 12px 6px;
+  padding: 6px 10px 6px 12px;
   border-bottom: 1px solid rgba(255,255,255,0.06);
-  margin-bottom: 4px;
+  margin-bottom: 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.delay-panel--collapsed .delay-panel__title {
+  border-bottom: none;
+  padding: 7px 10px 7px 12px;
+}
+
+.delay-panel__title:hover {
+  background: rgba(255,255,255,0.04);
+  border-radius: 8px 8px 0 0;
+}
+
+.delay-panel--collapsed .delay-panel__title:hover {
+  border-radius: 8px;
+}
+
+.delay-panel__title-text {
+  flex: 1;
+}
+
+.delay-panel__count {
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: #92400e;
+  color: #fbbf24;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.delay-panel__toggle {
+  color: #4b5563;
+  font-size: 1.1rem;
+  line-height: 1;
+  display: inline-block;
+  transform: rotate(0deg);
+  transition: transform 0.2s ease;
+}
+
+.delay-panel__toggle--open {
+  transform: rotate(90deg);
+}
+
+/* restore bottom padding on the list wrapper when expanded */
+.delay-panel__list {
+  padding-bottom: 4px;
 }
 
 .delay-panel__list {
