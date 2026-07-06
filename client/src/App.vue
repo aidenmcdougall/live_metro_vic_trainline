@@ -36,7 +36,7 @@
     </Toolbar>
 
     <div class="map-wrapper">
-      <TrainMap ref="trainMapRef" :vehicles="vehicles" :stops="stops" :color="networkColor" :network="network" :selected-id="selectedVehicleId" @train-selected="onTrainSelected" />
+      <TrainMap ref="trainMapRef" :vehicles="vehicles" :stops="stops" :color="networkColor" :network="network" :selected-id="selectedVehicleId" :route-polyline="routePolyline" @train-selected="onTrainSelected" />
       <ProgressBar v-if="loading && vehicles.length === 0" mode="indeterminate" class="loading-bar" />
 
       <div class="delay-panel" v-if="delayedVehicles.length">
@@ -62,7 +62,7 @@
 
       <!-- Right detail panel -->
       <Transition name="panel-slide">
-        <div v-if="selectedVehicle" class="train-detail-panel">
+        <div v-if="selectedVehicle" class="train-detail-panel" :style="{ '--net-color': networkColor }">
           <div class="tdp-image-wrap" v-if="fleetImageSrc">
             <img :src="fleetImageSrc" :alt="selectedFleet?.type" class="tdp-image" />
             <button class="tdp-close tdp-close--on-image" @click="selectedVehicleId = null">✕</button>
@@ -71,6 +71,7 @@
           <div class="tdp-header" :class="{ 'tdp-header--no-top': !!fleetImageSrc }">
             <div class="tdp-header-main">
               <div class="tdp-vehicle-id">{{ selectedVehicle.vehicleId ?? selectedVehicle.tripId ?? '—' }}</div>
+              <div v-if="tripSchedule.headsign" class="tdp-headsign">→ {{ tripSchedule.headsign }}</div>
               <template v-if="selectedFleet">
                 <div class="tdp-fleet-row">
                   <div class="tdp-fleet-badge">{{ selectedFleet.type }}</div>
@@ -85,6 +86,35 @@
           <div v-if="selectedFleet" class="tdp-consist">
             <div class="tdp-section-label">Consist</div>
             <div class="tdp-consist-list">{{ selectedFleet.consist.join(' · ') }}</div>
+          </div>
+
+          <!-- Stop timeline -->
+          <div v-if="tripSchedule.loading && !visibleTripStops.length" class="tdp-tl-loading">
+            Loading schedule...
+          </div>
+          <div v-if="visibleTripStops.length" class="tdp-timeline">
+            <div class="tdp-section-label" style="padding: 0 14px 8px">Stops</div>
+            <div
+              v-for="(stop, i) in visibleTripStops"
+              :key="stop.stopId + i"
+              class="tdp-tl-stop"
+              :class="{ 'tdp-tl-stop--past': stop.isPast, 'tdp-tl-stop--next': stop.isNext }"
+            >
+              <div class="tdp-tl-marker">
+                <div class="tdp-tl-dot"></div>
+                <div v-if="i < visibleTripStops.length - 1" class="tdp-tl-line"></div>
+              </div>
+              <div class="tdp-tl-content">
+                <div class="tdp-tl-name">{{ stop.name }}</div>
+                <div class="tdp-tl-times">
+                  <span v-if="stop.scheduledTime" class="tdp-tl-sch">{{ stop.scheduledTime }}</span>
+                  <span class="tdp-tl-time">{{ stop.displayTime }}</span>
+                  <span v-if="stop.delayMins" class="tdp-tl-delay" :class="stop.delayMins > 0 ? 'tdp-tl-delay--late' : 'tdp-tl-delay--early'">
+                    {{ stop.delayMins > 0 ? '+' + stop.delayMins + 'm' : stop.delayMins + 'm' }}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="tdp-fields">
@@ -107,10 +137,6 @@
             <div class="tdp-row">
               <span class="tdp-key">Bearing</span>
               <span class="tdp-val">{{ selectedVehicle.bearing != null ? selectedVehicle.bearing + '°' : '—' }}</span>
-            </div>
-            <div v-if="nextStopName" class="tdp-row">
-              <span class="tdp-key">Next stop</span>
-              <span class="tdp-val">{{ nextStopName }}</span>
             </div>
             <div class="tdp-row">
               <span class="tdp-key">Updated</span>
@@ -168,10 +194,62 @@ const selectedVehicle = computed(() =>
   vehicles.value.find(v => v.id === selectedVehicleId.value) ?? null
 )
 
+function cleanStopName(name) {
+  if (!name) return null
+  return name.replace(/ Railway Station.*$/i, '').replace(/ Station$/i, '').toUpperCase()
+}
+
+function formatJourneyTime(ts) {
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true })
+}
+
 const nextStopName = computed(() => {
   const id = selectedVehicle.value?.nextStopId
   if (!id) return null
   return stopsMap.value[id] ?? null
+})
+
+const tripSchedule = ref({ stops: [], loading: false, headsign: null })
+
+const visibleTripStops = computed(() => {
+  // Full schedule from static GTFS
+  if (tripSchedule.value.stops.length) {
+    const stops = tripSchedule.value.stops
+    const nextIdx = stops.findIndex(s => !s.isPast)
+    return stops.map((s, i) => {
+      const displayTs = s.estDept ?? s.estArr ?? s.schedDept ?? s.schedArr
+      const scheduledTs = s.schedDept ?? s.schedArr
+      const delayMins = s.delay ? Math.round(s.delay / 60) : 0
+      return {
+        ...s,
+        name: cleanStopName(s.name) ?? s.stopId,
+        displayTime: formatJourneyTime(displayTs),
+        scheduledTime: scheduledTs && displayTs && scheduledTs !== displayTs
+          ? formatJourneyTime(scheduledTs) : null,
+        delayMins: Math.abs(delayMins) >= 1 ? delayMins : 0,
+        isNext: i === nextIdx,
+      }
+    })
+  }
+  // Fallback: realtime-only stops while static schedule loads
+  const stops = selectedVehicle.value?.stops ?? []
+  if (!stops.length) return []
+  const nextIdx = stops.findIndex(s => !s.isPast)
+  return stops.map((s, i) => {
+    const actual = s.arrActual ?? s.deptActual
+    const delay = s.arrDelay ?? s.deptDelay ?? 0
+    const scheduled = actual && delay ? actual - delay : null
+    const delayMins = Math.round(delay / 60)
+    return {
+      ...s,
+      name: cleanStopName(stopsMap.value[s.stopId]) ?? s.stopId,
+      displayTime: formatJourneyTime(actual),
+      scheduledTime: scheduled && scheduled !== actual ? formatJourneyTime(scheduled) : null,
+      delayMins: Math.abs(delayMins) >= 1 ? delayMins : 0,
+      isNext: i === nextIdx,
+    }
+  })
 })
 
 const FLEET_IMAGES = {
@@ -223,6 +301,65 @@ const stopsMap = computed(() => {
   for (const s of stops.value) m[s.id] = s.name
   return m
 })
+
+const stopCoordsMap = computed(() => {
+  const m = {}
+  for (const s of stops.value) m[s.id] = { lat: s.lat, lng: s.lng }
+  return m
+})
+
+const tripShape = ref(null)
+
+async function fetchTripShape(tripId) {
+  if (!tripId) { tripShape.value = null; return }
+  try {
+    const res = await fetch(`/api/trip-shape?tripId=${encodeURIComponent(tripId)}&network=${network.value}`)
+    if (!res.ok) return
+    const data = await res.json()
+    tripShape.value = data.shape ?? null
+  } catch (e) {
+    console.warn('Trip shape fetch failed:', e.message)
+  }
+}
+
+function closestShapeIndex(shape, lat, lng) {
+  let minD = Infinity, idx = 0
+  for (let i = 0; i < shape.length; i++) {
+    const d = (shape[i][0] - lat) ** 2 + (shape[i][1] - lng) ** 2
+    if (d < minD) { minD = d; idx = i }
+  }
+  return idx
+}
+
+const routePolyline = computed(() => {
+  const v = selectedVehicle.value
+  if (!v) return null
+
+  // Use real track geometry when available
+  const shape = tripShape.value
+  if (shape?.length >= 2) {
+    const splitIdx = closestShapeIndex(shape, v.lat, v.lng)
+    return {
+      past:   shape.slice(0, splitIdx + 1),
+      future: shape.slice(splitIdx),
+      color:  networkColor.value,
+    }
+  }
+
+  // Fallback: straight lines stop-to-stop
+  if (!visibleTripStops.value.length) return null
+  const coords = stopCoordsMap.value
+  const past = [], future = []
+  for (const stop of visibleTripStops.value) {
+    const c = coords[stop.stopId]
+    if (!c) continue
+    if (stop.isPast) past.push([c.lat, c.lng])
+    else future.push([c.lat, c.lng])
+  }
+  if (past.length) past.push([v.lat, v.lng])
+  future.unshift([v.lat, v.lng])
+  return { past, future, color: networkColor.value }
+})
 const loading = ref(false)
 const error = ref(null)
 const lastUpdated = ref(null)
@@ -246,10 +383,14 @@ async function refresh() {
       delay: updates[v.tripId]?.delay ?? null,
       cancelled: updates[v.tripId]?.cancelled ?? false,
       nextStopId: updates[v.tripId]?.nextStopId ?? null,
+      stops: updates[v.tripId]?.stops ?? [],
     }))
 
     const d = new Date()
     lastUpdated.value = d.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
+    const sv = selectedVehicle.value
+    if (sv) fetchTripSchedule(sv.tripId, sv.startDate, true)
   } catch (e) {
     error.value = e.message
     console.error('Fetch error:', e)
@@ -269,9 +410,47 @@ async function fetchStops() {
   }
 }
 
+async function fetchTripSchedule(tripId, startDate, silent = false) {
+  if (!tripId) { tripSchedule.value = { stops: [], loading: false, headsign: null }; return }
+  if (!silent) tripSchedule.value = { stops: [], loading: true, headsign: null }
+  try {
+    const params = new URLSearchParams({ tripId, network: network.value })
+    if (startDate) params.set('startDate', startDate)
+    const res = await fetch(`/api/trip-schedule?${params}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    tripSchedule.value = {
+      stops: data.stops ?? [],
+      loading: data.loading ?? false,
+      headsign: data.headsign ?? null,
+    }
+    // GTFS still loading server-side — retry after 2 s
+    if (data.loading) {
+      setTimeout(() => {
+        if (selectedVehicle.value?.tripId === tripId) fetchTripSchedule(tripId, startDate)
+      }, 2000)
+    }
+  } catch (e) {
+    console.warn('Trip schedule fetch failed:', e.message)
+    if (!silent) tripSchedule.value = { stops: [], loading: false, headsign: null }
+  }
+}
+
+watch(selectedVehicle, (v) => {
+  if (v) {
+    fetchTripSchedule(v.tripId, v.startDate)
+    fetchTripShape(v.tripId)
+  } else {
+    tripSchedule.value = { stops: [], loading: false, headsign: null }
+    tripShape.value = null
+  }
+})
+
 watch(network, () => {
   vehicles.value = []
   stops.value = []
+  tripSchedule.value = { stops: [], loading: false, headsign: null }
+  tripShape.value = null
   refresh()
   fetchStops()
 })
@@ -499,6 +678,13 @@ onUnmounted(() => clearInterval(pollInterval))
   margin-bottom: 8px;
 }
 
+.tdp-headsign {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+
 .tdp-fleet-row {
   display: flex;
   align-items: center;
@@ -610,4 +796,116 @@ onUnmounted(() => clearInterval(pollInterval))
 .tdp-val--ontime   { color: #4ade80; }
 .tdp-val--delayed  { color: #fbbf24; font-weight: 600; }
 .tdp-val--cancelled { color: #f87171; font-weight: 600; }
+
+.tdp-tl-loading {
+  padding: 14px 14px;
+  font-size: 0.72rem;
+  color: #374151;
+  font-style: italic;
+}
+
+/* Stop timeline */
+.tdp-timeline {
+  padding: 12px 0 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.tdp-tl-stop {
+  display: flex;
+  gap: 10px;
+  padding: 0 14px;
+}
+
+.tdp-tl-marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+  padding-top: 5px;
+}
+
+.tdp-tl-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--net-color) 18%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--net-color) 70%, transparent);
+}
+
+.tdp-tl-stop--past .tdp-tl-dot {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.1);
+}
+
+.tdp-tl-stop--next .tdp-tl-dot {
+  width: 9px;
+  height: 9px;
+  background: #f1f5f9;
+  border-color: #f1f5f9;
+  box-shadow: 0 0 7px rgba(255,255,255,0.55);
+  margin-top: -1px;
+}
+
+.tdp-tl-line {
+  width: 1.5px;
+  flex: 1;
+  min-height: 10px;
+  background: color-mix(in srgb, var(--net-color) 35%, transparent);
+  margin: 3px 0 0;
+}
+
+.tdp-tl-stop--past .tdp-tl-line {
+  background: rgba(255,255,255,0.06);
+}
+
+.tdp-tl-content {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 14px;
+}
+
+.tdp-tl-name {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #d1d5db;
+  letter-spacing: 0.01em;
+  margin-bottom: 2px;
+}
+
+.tdp-tl-stop--past .tdp-tl-name  { color: #374151; }
+.tdp-tl-stop--next .tdp-tl-name  { color: #f1f5f9; }
+
+.tdp-tl-times {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.tdp-tl-time {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.tdp-tl-stop--past .tdp-tl-time { color: #374151; }
+.tdp-tl-stop--next .tdp-tl-time { color: #d1d5db; }
+
+.tdp-tl-sch {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #4b5563;
+  text-decoration: line-through;
+}
+
+.tdp-tl-delay {
+  font-size: 0.63rem;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.tdp-tl-delay--late  { background: #92400e; color: #fbbf24; }
+.tdp-tl-delay--early { background: #14532d; color: #4ade80; }
 </style>

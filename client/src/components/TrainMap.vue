@@ -27,6 +27,10 @@ const props = defineProps({
     type: String,
     default: null,
   },
+  routePolyline: {
+    type: Object,
+    default: null,
+  },
 })
 
 const emit = defineEmits(['train-selected'])
@@ -35,6 +39,8 @@ const mapEl = ref(null)
 let map = null
 const markerMap = {}
 let stopsLayer = null
+let routePastLine = null
+let routeFutureLine = null
 const STOPS_MIN_ZOOM = 11
 
 function stopIcon() {
@@ -55,6 +61,22 @@ function syncStops(stops) {
       .addTo(stopsLayer)
   }
   updateStopsVisibility()
+}
+
+function syncRouteLine(polyline) {
+  if (routePastLine)   { routePastLine.remove();   routePastLine = null }
+  if (routeFutureLine) { routeFutureLine.remove(); routeFutureLine = null }
+  if (!polyline || !map) return
+  if (polyline.past.length >= 2) {
+    routePastLine = L.polyline(polyline.past, {
+      color: '#ffffff', opacity: 0.2, weight: 2, interactive: false,
+    }).addTo(map)
+  }
+  if (polyline.future.length >= 2) {
+    routeFutureLine = L.polyline(polyline.future, {
+      color: '#ffffff', opacity: 0.75, weight: 2, interactive: false,
+    }).addTo(map)
+  }
 }
 
 function updateStopsVisibility() {
@@ -185,6 +207,7 @@ defineExpose({ focusVehicle })
 watch(() => props.vehicles, syncMarkers)
 watch(() => props.color, () => syncMarkers(props.vehicles))
 watch(() => props.stops, syncStops)
+watch(() => props.routePolyline, syncRouteLine)
 watch(() => props.selectedId, (newId, oldId) => {
   if (oldId && markerMap[oldId]) markerMap[oldId].closePopup()
   if (newId && markerMap[newId]) markerMap[newId].openPopup()
@@ -221,6 +244,8 @@ onUnmounted(() => {
   map?.remove()
   map = null
   stopsLayer = null
+  routePastLine = null
+  routeFutureLine = null
 })
 </script>
 
