@@ -46,11 +46,11 @@ for (let n = 1, t = 1301; n <= 287; n += 2, t++) {
   xtropolisEarlySets.push([`${n}M`, `${t}T`, `${n + 1}M`])
 }
 
-// --- HCMT: units 01–70, 7 cars each ---
+// --- HCMT: units 01–70, 7 cars each (feed uses M suffix) ---
 const hcmtSets = []
 for (let i = 1; i <= 70; i++) {
   const n = String(i).padStart(2, '0')
-  hcmtSets.push([`90${n}`, `91${n}`, `92${n}`, `93${n}`, `97${n}`, `98${n}`, `99${n}`])
+  hcmtSets.push([`90${n}M`, `91${n}M`, `92${n}M`, `93${n}M`, `97${n}M`, `98${n}M`, `99${n}M`])
 }
 
 const FLEET_SETS = {

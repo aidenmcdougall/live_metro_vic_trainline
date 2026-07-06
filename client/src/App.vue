@@ -66,6 +66,11 @@
           <div class="tdp-image-wrap" v-if="fleetImageSrc">
             <img :src="fleetImageSrc" :alt="selectedFleet?.type" class="tdp-image" />
             <button class="tdp-close tdp-close--on-image" @click="selectedVehicleId = null">✕</button>
+            <div v-if="fleetAttribution" class="tdp-image-credit">
+              © <a :href="fleetAttribution.authorUrl" target="_blank" rel="noopener">{{ fleetAttribution.author }}</a>
+              · <a :href="fleetAttribution.licenseUrl" target="_blank" rel="noopener">{{ fleetAttribution.license }}</a>
+              · <a :href="fleetAttribution.sourceUrl" target="_blank" rel="noopener">Wikimedia</a>
+            </div>
           </div>
 
           <div class="tdp-header" :class="{ 'tdp-header--no-top': !!fleetImageSrc }">
@@ -253,11 +258,27 @@ const visibleTripStops = computed(() => {
 })
 
 const FLEET_IMAGES = {
-  'VLocity': '/VLocity.jpg',
-  'N type': '/NTrain.jpg',
+  'VLocity':      '/VLocity.jpg',
+  'N type':       '/NTrain.jpg',
+  'Comeng':       '/Comeng.jpg',
+  'Siemens':      '/Siemens.jpg',
+  "X'Trapolis":   '/XTrapolis.jpg',
+  'HCMT':         '/HCMT.jpg',
+  "X'Trapolis 2": '/XTrapolis2.jpg',
+}
+
+const FLEET_ATTRIBUTION = {
+  'VLocity':      { author: 'PEPSI697',      authorUrl: 'https://commons.wikimedia.org/wiki/User:PEPSI697',                              license: 'CC BY-SA 4.0', licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0', sourceUrl: 'https://commons.wikimedia.org/w/index.php?curid=180749183' },
+  'N type':       { author: 'Thomas Hobley', authorUrl: 'https://commons.wikimedia.org/w/index.php?title=User:ThomasH7532',              license: 'CC BY-SA 4.0', licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0', sourceUrl: 'https://commons.wikimedia.org/w/index.php?curid=106624767' },
+  'Comeng':       { author: 'Joel200716',    authorUrl: 'https://commons.wikimedia.org/w/index.php?title=User:Joel200716',               license: 'CC BY 4.0',    licenseUrl: 'https://creativecommons.org/licenses/by/4.0',    sourceUrl: 'https://commons.wikimedia.org/w/index.php?curid=148422496' },
+  'Siemens':      { author: 'PEPSI697',      authorUrl: 'https://commons.wikimedia.org/wiki/User:PEPSI697',                              license: 'CC BY-SA 4.0', licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0', sourceUrl: 'https://commons.wikimedia.org/w/index.php?curid=182724969' },
+  "X'Trapolis":   { author: 'PEPSI697',      authorUrl: 'https://commons.wikimedia.org/wiki/User:PEPSI697',                              license: 'CC BY-SA 4.0', licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0', sourceUrl: 'https://commons.wikimedia.org/w/index.php?curid=193709148' },
+  'HCMT':         { author: 'PEPSI697',      authorUrl: 'https://commons.wikimedia.org/wiki/User:PEPSI697',                              license: 'CC BY-SA 4.0', licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0', sourceUrl: 'https://commons.wikimedia.org/w/index.php?curid=182724971' },
+  "X'Trapolis 2": { author: 'PEPSI697',      authorUrl: 'https://commons.wikimedia.org/wiki/User:PEPSI697',                              license: 'CC BY-SA 4.0', licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0', sourceUrl: 'https://commons.wikimedia.org/w/index.php?curid=193709147' },
 }
 
 const fleetImageSrc = computed(() => FLEET_IMAGES[selectedFleet.value?.type] ?? null)
+const fleetAttribution = computed(() => FLEET_ATTRIBUTION[selectedFleet.value?.type] ?? null)
 
 const selectedFleet = computed(() => {
   if (!selectedVehicle.value) return null
@@ -637,6 +658,28 @@ onUnmounted(() => clearInterval(pollInterval))
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.tdp-image-credit {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 10px 10px 6px;
+  background: linear-gradient(transparent, rgba(0,0,0,0.7));
+  font-size: 0.6rem;
+  color: rgba(255,255,255,0.55);
+  line-height: 1.4;
+}
+
+.tdp-image-credit a {
+  color: rgba(255,255,255,0.55);
+  text-decoration: none;
+}
+
+.tdp-image-credit a:hover {
+  color: rgba(255,255,255,0.9);
+  text-decoration: underline;
 }
 
 .tdp-close--on-image {
