@@ -62,7 +62,7 @@
 
       <!-- Right detail panel -->
       <Transition name="panel-slide">
-        <div v-if="selectedVehicle" class="train-detail-panel" :style="{ '--net-color': networkColor }">
+        <div v-if="selectedVehicle" class="train-detail-panel" :style="{ '--net-color': selectedVehicleColor }">
           <div class="tdp-image-wrap" v-if="fleetImageSrc">
             <img :src="fleetImageSrc" :alt="selectedFleet?.type" class="tdp-image" />
             <button class="tdp-close tdp-close--on-image" @click="selectedVehicleId = null">✕</button>
@@ -175,9 +175,26 @@ const NETWORK_COLORS = {
   metro: '#3b82f6',
 }
 
+const METRO_ROUTE_COLORS = {
+  WER: '#f472b6', LAV: '#f472b6', WIL: '#f472b6', SHM: '#f472b6',
+  SUY: '#38bdf8', CBE: '#38bdf8', PKM: '#38bdf8',
+  UFD: '#fbbf24', CGB: '#fbbf24',
+  HBE: '#ef4444', MDD: '#ef4444',
+  LIL: '#1d4ed8', BEG: '#1d4ed8', ALM: '#1d4ed8', GWY: '#1d4ed8',
+  FKN: '#16a34a',
+}
+
 const trainMapRef = ref(null)
 const network = ref('vline')
 const networkColor = computed(() => NETWORK_COLORS[network.value])
+
+const selectedVehicleColor = computed(() => {
+  if (network.value === 'metro' && selectedVehicle.value?.routeId) {
+    const code = selectedVehicle.value.routeId.split('-').pop()?.replace(/:/g, '')
+    return METRO_ROUTE_COLORS[code] ?? networkColor.value
+  }
+  return networkColor.value
+})
 
 function routeCode(routeId) {
   return routeId?.split('-').pop()?.replace(/:/g, '') ?? '—'
@@ -363,7 +380,7 @@ const routePolyline = computed(() => {
     return {
       past:   shape.slice(0, splitIdx + 1),
       future: shape.slice(splitIdx),
-      color:  networkColor.value,
+      color:  selectedVehicleColor.value,
     }
   }
 
@@ -379,7 +396,7 @@ const routePolyline = computed(() => {
   }
   if (past.length) past.push([v.lat, v.lng])
   future.unshift([v.lat, v.lng])
-  return { past, future, color: networkColor.value }
+  return { past, future, color: selectedVehicleColor.value }
 })
 const loading = ref(false)
 const error = ref(null)
