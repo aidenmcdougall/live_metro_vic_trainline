@@ -2,6 +2,9 @@ import express from 'express'
 import cors from 'cors'
 import axios from 'axios'
 import GtfsRealtimeBindings from 'gtfs-realtime-bindings'
+import { readFileSync } from 'fs'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
 import { config } from 'dotenv'
 
 const dotenvResult = config({ path: '../.env' })
@@ -19,6 +22,28 @@ const API_URLS = {
 const TRIP_UPDATE_URLS = {
   vline: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/vline/trip-updates',
   metro: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/metro/trip-updates',
+}
+
+const STOP_MODES = {
+  vline: 'REGIONAL TRAIN',
+  metro: 'METRO TRAIN',
+}
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+let stopsCache = null
+function getAllStops() {
+  if (stopsCache) return stopsCache
+  const raw = JSON.parse(readFileSync(join(__dirname, 'public_transport_stops.geojson'), 'utf8'))
+  stopsCache = raw.features.map(f => ({
+    id: f.properties.STOP_ID,
+    name: f.properties.STOP_NAME,
+    mode: f.properties.MODE,
+    lat: f.geometry.coordinates[1],
+    lng: f.geometry.coordinates[0],
+  }))
+  console.log(`Loaded ${stopsCache.length} total stops from GeoJSON`)
+  return stopsCache
 }
 
 app.get('/api/vehicles', async (_req, res) => {
@@ -91,9 +116,17 @@ app.get('/api/trip-updates', async (_req, res) => {
       if (!tu?.trip?.tripId) continue
       const sr = tu.trip.scheduleRelationship
       const cancelled = sr === 3 || sr === 'CANCELED' || sr === 'CANCELLED'
-      const stu = tu.stopTimeUpdate?.[0]
-      const delay = stu?.arrival?.delay ?? stu?.departure?.delay ?? null
-      updates[tu.trip.tripId] = { delay: delay != null ? Number(delay) : null, cancelled }
+      const now = Math.floor(Date.now() / 1000)
+      const nextStu = tu.stopTimeUpdate?.find(stu => {
+        const deptTime = stu.departure?.time ? Number(stu.departure.time) : null
+        return deptTime === null || deptTime >= now
+      }) ?? tu.stopTimeUpdate?.[0]
+      const delay = nextStu?.arrival?.delay ?? nextStu?.departure?.delay ?? null
+      updates[tu.trip.tripId] = {
+        delay: delay != null ? Number(delay) : null,
+        cancelled,
+        nextStopId: nextStu?.stopId ?? null,
+      }
     }
 
     res.json({ updates })
@@ -103,6 +136,18 @@ app.get('/api/trip-updates', async (_req, res) => {
       console.error('Trip updates error:', err.message)
     }
     res.status(502).json({ error: 'Failed to fetch trip updates' })
+  }
+})
+
+app.get('/api/stops', (req, res) => {
+  const network = req.query.network === 'metro' ? 'metro' : 'vline'
+  try {
+    const mode = STOP_MODES[network]
+    const stops = getAllStops().filter(s => s.mode === mode)
+    res.json({ stops })
+  } catch (err) {
+    console.error(`Failed to load stops (${network}):`, err.message)
+    res.status(500).json({ error: err.message })
   }
 })
 

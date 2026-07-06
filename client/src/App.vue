@@ -36,7 +36,7 @@
     </Toolbar>
 
     <div class="map-wrapper">
-      <TrainMap ref="trainMapRef" :vehicles="vehicles" :color="networkColor" :network="network" :selected-id="selectedVehicleId" @train-selected="onTrainSelected" />
+      <TrainMap ref="trainMapRef" :vehicles="vehicles" :stops="stops" :color="networkColor" :network="network" :selected-id="selectedVehicleId" @train-selected="onTrainSelected" />
       <ProgressBar v-if="loading && vehicles.length === 0" mode="indeterminate" class="loading-bar" />
 
       <div class="delay-panel" v-if="delayedVehicles.length">
@@ -63,12 +63,12 @@
       <!-- Right detail panel -->
       <Transition name="panel-slide">
         <div v-if="selectedVehicle" class="train-detail-panel">
-          <div class="tdp-image-wrap" v-if="selectedFleet?.type === 'VLocity'">
-            <img src="/VLocity.jpg" alt="VLocity" class="tdp-image" />
+          <div class="tdp-image-wrap" v-if="fleetImageSrc">
+            <img :src="fleetImageSrc" :alt="selectedFleet?.type" class="tdp-image" />
             <button class="tdp-close tdp-close--on-image" @click="selectedVehicleId = null">✕</button>
           </div>
 
-          <div class="tdp-header" :class="{ 'tdp-header--no-top': selectedFleet?.type === 'VLocity' }">
+          <div class="tdp-header" :class="{ 'tdp-header--no-top': !!fleetImageSrc }">
             <div class="tdp-header-main">
               <div class="tdp-vehicle-id">{{ selectedVehicle.vehicleId ?? selectedVehicle.tripId ?? '—' }}</div>
               <template v-if="selectedFleet">
@@ -79,7 +79,7 @@
                 <div class="tdp-fleet-desc">{{ selectedFleet.meta.description }}</div>
               </template>
             </div>
-            <button class="tdp-close" v-if="selectedFleet?.type !== 'VLocity'" @click="selectedVehicleId = null">✕</button>
+            <button class="tdp-close" v-if="!fleetImageSrc" @click="selectedVehicleId = null">✕</button>
           </div>
 
           <div v-if="selectedFleet" class="tdp-consist">
@@ -107,6 +107,10 @@
             <div class="tdp-row">
               <span class="tdp-key">Bearing</span>
               <span class="tdp-val">{{ selectedVehicle.bearing != null ? selectedVehicle.bearing + '°' : '—' }}</span>
+            </div>
+            <div v-if="nextStopName" class="tdp-row">
+              <span class="tdp-key">Next stop</span>
+              <span class="tdp-val">{{ nextStopName }}</span>
             </div>
             <div class="tdp-row">
               <span class="tdp-key">Updated</span>
@@ -164,6 +168,19 @@ const selectedVehicle = computed(() =>
   vehicles.value.find(v => v.id === selectedVehicleId.value) ?? null
 )
 
+const nextStopName = computed(() => {
+  const id = selectedVehicle.value?.nextStopId
+  if (!id) return null
+  return stopsMap.value[id] ?? null
+})
+
+const FLEET_IMAGES = {
+  'VLocity': '/VLocity.jpg',
+  'N type': '/NTrain.jpg',
+}
+
+const fleetImageSrc = computed(() => FLEET_IMAGES[selectedFleet.value?.type] ?? null)
+
 const selectedFleet = computed(() => {
   if (!selectedVehicle.value) return null
   if (network.value === 'metro') return getFleetInfo(selectedVehicle.value.vehicleId)
@@ -200,6 +217,12 @@ function onTrainSelected(id) {
 }
 
 const vehicles = ref([])
+const stops = ref([])
+const stopsMap = computed(() => {
+  const m = {}
+  for (const s of stops.value) m[s.id] = s.name
+  return m
+})
 const loading = ref(false)
 const error = ref(null)
 const lastUpdated = ref(null)
@@ -222,6 +245,7 @@ async function refresh() {
       ...v,
       delay: updates[v.tripId]?.delay ?? null,
       cancelled: updates[v.tripId]?.cancelled ?? false,
+      nextStopId: updates[v.tripId]?.nextStopId ?? null,
     }))
 
     const d = new Date()
@@ -234,13 +258,27 @@ async function refresh() {
   }
 }
 
+async function fetchStops() {
+  try {
+    const res = await fetch(`/api/stops?network=${network.value}`)
+    if (!res.ok) { console.warn('Stops fetch failed:', res.status); return }
+    const data = await res.json()
+    stops.value = data.stops ?? []
+  } catch (e) {
+    console.warn('Stops fetch error:', e.message)
+  }
+}
+
 watch(network, () => {
   vehicles.value = []
+  stops.value = []
   refresh()
+  fetchStops()
 })
 
 onMounted(() => {
   refresh()
+  fetchStops()
   pollInterval = setInterval(refresh, 30_000)
 })
 

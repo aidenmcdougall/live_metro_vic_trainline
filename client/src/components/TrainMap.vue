@@ -11,6 +11,10 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  stops: {
+    type: Array,
+    default: () => [],
+  },
   color: {
     type: String,
     default: '#a855f7',
@@ -30,6 +34,38 @@ const emit = defineEmits(['train-selected'])
 const mapEl = ref(null)
 let map = null
 const markerMap = {}
+let stopsLayer = null
+const STOPS_MIN_ZOOM = 11
+
+function stopIcon() {
+  return L.divIcon({
+    className: '',
+    html: '<span class="stop-pin">🚉</span>',
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
+  })
+}
+
+function syncStops(stops) {
+  if (!stopsLayer) return
+  stopsLayer.clearLayers()
+  for (const stop of stops) {
+    L.marker([stop.lat, stop.lng], { icon: stopIcon(), zIndexOffset: -500 })
+      .bindTooltip(stop.name, { direction: 'top', offset: [0, -8], className: 'stop-tooltip' })
+      .addTo(stopsLayer)
+  }
+  updateStopsVisibility()
+}
+
+function updateStopsVisibility() {
+  if (!map || !stopsLayer) return
+  const zoom = map.getZoom()
+  if (zoom >= STOPS_MIN_ZOOM) {
+    if (!map.hasLayer(stopsLayer)) stopsLayer.addTo(map)
+  } else {
+    if (map.hasLayer(stopsLayer)) stopsLayer.remove()
+  }
+}
 
 const METRO_ROUTE_COLORS = {
   WER: '#f472b6', LAV: '#f472b6', WIL: '#f472b6', SHM: '#f472b6',
@@ -148,6 +184,7 @@ defineExpose({ focusVehicle })
 
 watch(() => props.vehicles, syncMarkers)
 watch(() => props.color, () => syncMarkers(props.vehicles))
+watch(() => props.stops, syncStops)
 watch(() => props.selectedId, (newId, oldId) => {
   if (oldId && markerMap[oldId]) markerMap[oldId].closePopup()
   if (newId && markerMap[newId]) markerMap[newId].openPopup()
@@ -166,7 +203,7 @@ onMounted(() => {
   })
   L.control.zoom({ position: 'bottomright' }).addTo(map)
 
-  map.on('zoomend', () => syncMarkers(props.vehicles))
+  map.on('zoomend', () => { syncMarkers(props.vehicles); updateStopsVisibility() })
   map.on('click', () => emit('train-selected', null))
 
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -175,12 +212,15 @@ onMounted(() => {
     maxZoom: 19,
   }).addTo(map)
 
+  stopsLayer = L.layerGroup()
+  if (props.stops.length) syncStops(props.stops)
   if (props.vehicles.length) syncMarkers(props.vehicles)
 })
 
 onUnmounted(() => {
   map?.remove()
   map = null
+  stopsLayer = null
 })
 </script>
 
@@ -266,5 +306,31 @@ onUnmounted(() => {
 
 .leaflet-popup-close-button {
   display: none !important;
+}
+
+/* Station stop pins */
+.stop-pin {
+  font-size: 13px;
+  line-height: 1;
+  display: block;
+  text-align: center;
+  cursor: default;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+}
+
+.stop-tooltip {
+  background: rgba(10, 10, 16, 0.92) !important;
+  border: 1px solid rgba(255,255,255,0.1) !important;
+  color: #e2e8f0 !important;
+  font-size: 0.7rem !important;
+  font-weight: 600 !important;
+  padding: 3px 8px !important;
+  border-radius: 4px !important;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.6) !important;
+  white-space: nowrap !important;
+}
+
+.stop-tooltip.leaflet-tooltip-top::before {
+  border-top-color: rgba(255,255,255,0.1) !important;
 }
 </style>

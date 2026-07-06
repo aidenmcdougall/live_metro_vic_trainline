@@ -41,8 +41,22 @@ for (const entry of VLOCITY_SETS) {
   }
 }
 
+const N_TYPE_META = {
+  manufacturer: 'A. Goninan & Co',
+  introduced: 1994,
+  cars: null,
+  description: 'N class locomotive, built 1994',
+}
+
 export function getVLineFleetInfo(vehicleId) {
   if (!vehicleId) return null
+
+  // N class locomotive: N451–N475
+  if (vehicleId.startsWith('N') && /^\d+$/.test(vehicleId.slice(1))) {
+    return { type: 'N type', set: null, consist: [vehicleId], meta: N_TYPE_META }
+  }
+
+  // VLocity DMU
   const carNum = vehicleId.startsWith('V') ? vehicleId.slice(1) : vehicleId
   const entry = VLOCITY_LOOKUP[carNum]
   if (!entry) return null
