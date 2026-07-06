@@ -55,7 +55,7 @@ function stopIcon() {
 function syncStops(stops) {
   if (!stopsLayer) return
   stopsLayer.clearLayers()
-  for (const stop of stops) {
+  for (const stop of stops.filter(s => s.name?.endsWith('Railway Station'))) {
     L.marker([stop.lat, stop.lng], { icon: stopIcon(), zIndexOffset: -500 })
       .bindTooltip(stop.name, { direction: 'top', offset: [0, -8], className: 'stop-tooltip' })
       .addTo(stopsLayer)
