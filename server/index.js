@@ -73,6 +73,23 @@ const GTFS_ZIP_PATH = join(__dirname, 'gtfs.zip')
 const GTFS_ETAG_PATH = join(__dirname, 'gtfs.zip.etag')
 const GTFS_REFRESH_INTERVAL_MS = 24 * 3600 * 1000
 
+function gtfsNetworkZipPath(network) {
+  return join(__dirname, `gtfs-${network}.zip`)
+}
+
+// The combined bundle is ~280MB (all three networks concatenated) but any one network's actual
+// data is only 25-50MB of that — loading the whole thing into memory just to reach one network's
+// slice was the cause of an OOM in production. Splitting it into per-network files once here means
+// loadGtfsStatic() below only ever has to read the small file it actually needs.
+function splitGtfsZip(combinedZipBuffer) {
+  const zip = new AdmZip(combinedZipBuffer)
+  for (const [network, entryName] of Object.entries(GTFS_INNER_ZIPS)) {
+    const entry = zip.getEntry(entryName)
+    if (!entry) continue
+    writeFileSync(gtfsNetworkZipPath(network), entry.getData())
+  }
+}
+
 async function refreshGtfsZip() {
   // An etag is only meaningful if we actually have the zip it refers to — otherwise a stale
   // etag (e.g. committed to git while gtfs.zip itself is gitignored) would make a fresh
@@ -91,6 +108,10 @@ async function refreshGtfsZip() {
 
     if (response.status === 304) {
       console.log('GTFS static bundle unchanged upstream, keeping local copy')
+      if (Object.keys(GTFS_INNER_ZIPS).some(network => !existsSync(gtfsNetworkZipPath(network)))) {
+        console.log('Per-network GTFS zips missing, splitting existing combined bundle')
+        splitGtfsZip(readFileSync(GTFS_ZIP_PATH))
+      }
       return
     }
 
@@ -99,6 +120,8 @@ async function refreshGtfsZip() {
     renameSync(tmpPath, GTFS_ZIP_PATH)
     const etag = response.headers.etag
     if (etag) writeFileSync(GTFS_ETAG_PATH, etag)
+
+    splitGtfsZip(response.data)
 
     for (const k of Object.keys(gtfsStatic)) delete gtfsStatic[k]
     console.log(`GTFS static bundle refreshed (${(response.data.byteLength / 1e6).toFixed(1)} MB) — caches cleared, will reload lazily`)
@@ -147,28 +170,71 @@ function gtfsTimeToSecs(t) {
 
 async function loadGtfsStatic(network) {
   if (gtfsStatic[network]) return
+  // Keep at most one network's static schedule resident at a time. Only one network's map is
+  // ever visible in the UI, but the service-alerts endpoint triggers a load for whatever network
+  // is currently selected — without this, a user (or a poller) cycling through all three tabs
+  // would leave all three multi-hundred-MB datasets cached simultaneously, which is what took
+  // this process well past a memory-capped host's limit. Forcing a collection here, before
+  // starting the next network's own multi-hundred-MB parsing burst, matters just as much as the
+  // eviction itself — otherwise the outgoing network's memory is only *unreferenced*, not yet
+  // reclaimed, and the two peaks stack instead of one replacing the other.
+  if (Object.keys(gtfsStatic).length) {
+    for (const other of Object.keys(gtfsStatic)) delete gtfsStatic[other]
+    if (global.gc) global.gc()
+  }
+
   console.log(`Loading GTFS static for ${network}...`)
   const t0 = Date.now()
 
-  const outer = new AdmZip(join(__dirname, 'gtfs.zip'))
-  const innerEntry = outer.getEntry(GTFS_INNER_ZIPS[network])
-  if (!innerEntry) throw new Error(`Inner zip not found: ${GTFS_INNER_ZIPS[network]}`)
-  const inner = new AdmZip(innerEntry.getData())
+  const networkZipPath = gtfsNetworkZipPath(network)
+  if (!existsSync(networkZipPath)) {
+    // First boot before any refresh has run, or an old checkout with only the combined zip.
+    if (!existsSync(GTFS_ZIP_PATH)) throw new Error('No GTFS bundle available yet')
+    splitGtfsZip(readFileSync(GTFS_ZIP_PATH))
+  }
+  const inner = new AdmZip(networkZipPath)
 
-  // stop_times → schedule map
+  // stop_times → schedule map. Same lean buffer-scan approach as shapes.txt below — this file
+  // can be 150k+ rows, and the generic per-row-object CSV parser was allocating one full object
+  // (with every column as a string field) per row just to immediately convert it to 4 numbers.
   const stEntry = inner.getEntry('stop_times.txt')
   if (!stEntry) throw new Error('stop_times.txt not found')
-  const stRows = parseGtfsCsv(stEntry.getData().toString('utf8'))
   const schedule = {}
-  for (const r of stRows) {
-    if (!r.trip_id) continue
-    if (!schedule[r.trip_id]) schedule[r.trip_id] = []
-    schedule[r.trip_id].push({
-      stopId: r.stop_id,
-      seq: parseInt(r.stop_sequence) || 0,
-      arrSecs: gtfsTimeToSecs(r.arrival_time),
-      deptSecs: gtfsTimeToSecs(r.departure_time),
-    })
+  let stopTimeCount = 0
+  {
+    const buf = stEntry.getData()
+    const firstNewline = buf.indexOf(10)
+    const header = splitCsvRow(buf.toString('utf8', 0, firstNewline).replace(/^﻿/, ''))
+    const tripIdx = header.indexOf('trip_id')
+    const stopIdx = header.indexOf('stop_id')
+    const seqIdx = header.indexOf('stop_sequence')
+    const arrIdx = header.indexOf('arrival_time')
+    const deptIdx = header.indexOf('departure_time')
+    const len = buf.length
+    let lineStart = firstNewline + 1
+    while (lineStart < len) {
+      let lineEnd = buf.indexOf(10, lineStart)
+      if (lineEnd === -1) lineEnd = len
+      let end = lineEnd
+      if (end > lineStart && buf[end - 1] === 13) end--
+      if (end > lineStart) {
+        // Every field in this feed is quoted ("01-ABY-...","07:07:00",...) — a naive split(',')
+        // leaves the quote characters in place and silently breaks every downstream key lookup.
+        const vals = splitCsvRow(buf.toString('utf8', lineStart, end))
+        const tripId = vals[tripIdx]
+        if (tripId) {
+          if (!schedule[tripId]) schedule[tripId] = []
+          schedule[tripId].push({
+            stopId: vals[stopIdx],
+            seq: parseInt(vals[seqIdx]) || 0,
+            arrSecs: gtfsTimeToSecs(vals[arrIdx]),
+            deptSecs: gtfsTimeToSecs(vals[deptIdx]),
+          })
+          stopTimeCount++
+        }
+      }
+      lineStart = lineEnd + 1
+    }
   }
   for (const tid of Object.keys(schedule)) schedule[tid].sort((a, b) => a.seq - b.seq)
 
@@ -211,21 +277,17 @@ async function loadGtfsStatic(network) {
     }
   }
 
-  // stopId → every scheduled stop-time across all trips, for the departure-board lookup
-  const stopDepartures = {}
+  // stopId → trip IDs passing through it, for the departure-board lookup. This used to also copy
+  // arrSecs/deptSecs (and before that, routeId/headsign/serviceId too) per stop-time — a full
+  // second copy of `schedule`'s ~150k-4M rows indexed the other way round. Metro/tram have enough
+  // stop-times that this duplication alone was worth several hundred MB; the actual times are
+  // already sitting in `schedule[tripId]` and are cheap to look up there instead.
+  const stopTripIndex = {}
   for (const [tripId, stopTimes] of Object.entries(schedule)) {
-    const info = tripInfo[tripId]
-    if (!info) continue
+    if (!tripInfo[tripId]) continue
     for (const st of stopTimes) {
-      if (!stopDepartures[st.stopId]) stopDepartures[st.stopId] = []
-      stopDepartures[st.stopId].push({
-        tripId,
-        routeId: info.routeId,
-        headsign: info.headsign,
-        serviceId: info.serviceId,
-        arrSecs: st.arrSecs,
-        deptSecs: st.deptSecs,
-      })
+      if (!stopTripIndex[st.stopId]) stopTripIndex[st.stopId] = []
+      stopTripIndex[st.stopId].push(tripId)
     }
   }
 
@@ -245,26 +307,80 @@ async function loadGtfsStatic(network) {
     }
   }
 
-  // shapes → [[lat, lng], ...] sorted by sequence
+  // shapes → [[lat, lng], ...] sorted by sequence.
+  // shapes.txt can be enormous for a statewide network (millions of survey-grade points), so this
+  // skips both the generic per-row-object CSV parser AND ever materializing a full decompressed
+  // string or an array of ~3M line-strings (a single vline load was peaking over 1GB from exactly
+  // that). shape_id rows are contiguous in this feed, so this scans the raw buffer line-by-line and
+  // decimates+flushes each shape as soon as its id changes, holding only one shape's raw points at
+  // a time instead of every point of every shape simultaneously.
   const shapes = {}
   const shapesEntry = inner.getEntry('shapes.txt')
   if (shapesEntry) {
-    const pts = {}
-    for (const r of parseGtfsCsv(shapesEntry.getData().toString('utf8'))) {
-      if (!r.shape_id) continue
-      if (!pts[r.shape_id]) pts[r.shape_id] = []
-      pts[r.shape_id].push([parseFloat(r.shape_pt_lat), parseFloat(r.shape_pt_lon), parseInt(r.shape_pt_sequence)])
+    const buf = shapesEntry.getData()
+    const firstNewline = buf.indexOf(10)
+    const header = splitCsvRow(buf.toString('utf8', 0, firstNewline).replace(/^﻿/, ''))
+    const idIdx = header.indexOf('shape_id')
+    const latIdx = header.indexOf('shape_pt_lat')
+    const lonIdx = header.indexOf('shape_pt_lon')
+    const seqIdx = header.indexOf('shape_pt_sequence')
+
+    const MAX_POINTS_PER_SHAPE = 300
+    function flushShape(id, points) {
+      if (!id || !points.length) return
+      points.sort((a, b) => a[2] - b[2])
+      const stride = Math.max(1, Math.ceil(points.length / MAX_POINTS_PER_SHAPE))
+      const decimated = []
+      for (let i = 0; i < points.length; i += stride) decimated.push([points[i][0], points[i][1]])
+      const last = points[points.length - 1]
+      const lastKept = decimated[decimated.length - 1]
+      if (lastKept && (lastKept[0] !== last[0] || lastKept[1] !== last[1])) decimated.push([last[0], last[1]])
+      shapes[id] = decimated
     }
-    for (const id of Object.keys(pts)) {
-      pts[id].sort((a, b) => a[2] - b[2])
-      shapes[id] = pts[id].map(p => [p[0], p[1]])
+
+    let currentId = null
+    let currentPoints = []
+    const len = buf.length
+    let lineStart = firstNewline + 1
+    while (lineStart < len) {
+      let lineEnd = buf.indexOf(10, lineStart)
+      if (lineEnd === -1) lineEnd = len
+      let end = lineEnd
+      if (end > lineStart && buf[end - 1] === 13) end-- // trim trailing \r
+      if (end > lineStart) {
+        // Quoted fields again — see the stop_times.txt note above.
+        const vals = splitCsvRow(buf.toString('utf8', lineStart, end))
+        const id = vals[idIdx]
+        if (id) {
+          if (id !== currentId) {
+            flushShape(currentId, currentPoints)
+            currentId = id
+            currentPoints = []
+          }
+          currentPoints.push([parseFloat(vals[latIdx]), parseFloat(vals[lonIdx]), parseInt(vals[seqIdx])])
+        }
+      }
+      lineStart = lineEnd + 1
     }
+    flushShape(currentId, currentPoints)
   }
 
-  gtfsStatic[network] = { schedule, tripInfo, stopNames, shapes, calendar, calendarExceptions, stopDepartures, parentStationStops }
+  gtfsStatic[network] = { schedule, tripInfo, stopNames, shapes, calendar, calendarExceptions, stopTripIndex, parentStationStops }
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
   const shapeCount = Object.keys(shapes).length
-  console.log(`GTFS static ready (${network}): ${Object.keys(schedule).length} trips, ${stRows.length} stop times, ${shapeCount} shapes [${elapsed}s]`)
+  console.log(`GTFS static ready (${network}): ${Object.keys(schedule).length} trips, ${stopTimeCount} stop times, ${shapeCount} shapes [${elapsed}s]`)
+
+  // Parsing this briefly allocates hundreds of MB of transient buffers (raw CSV text, per-row
+  // scratch arrays) that V8 doesn't hand back to the OS promptly on its own — on a memory-capped
+  // host that peak is exactly what gets a process OOM-killed, even though the steady-state
+  // requirement afterwards is a fraction of it. A single collection doesn't fully release large
+  // buffers back to the OS; a few passes with small gaps reliably does.
+  if (global.gc) {
+    for (let i = 0; i < 4; i++) {
+      global.gc()
+      await new Promise(r => setTimeout(r, 200))
+    }
+  }
 }
 
 const WEEKDAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
@@ -608,8 +724,8 @@ app.get('/api/stop-departures', async (req, res) => {
   }
 
   const gs = gtfsStatic[network]
-  const entries = gs.stopDepartures[stopId] ?? []
-  if (!entries.length) return res.json({ departures: [] })
+  const tripIds = gs.stopTripIndex[stopId] ?? []
+  if (!tripIds.length) return res.json({ departures: [] })
 
   const nowMs = Date.now()
   const nowSecs = Math.floor(nowMs / 1000)
@@ -619,18 +735,23 @@ app.get('/api/stop-departures', async (req, res) => {
   const yesterdayMidnight = gtfsMidnightSecs(yesterdayStr)
 
   const upcoming = []
-  for (const e of entries) {
-    const t = e.deptSecs ?? e.arrSecs
+  for (const tripId of tripIds) {
+    // arrSecs/deptSecs live on schedule[tripId] rather than being duplicated per stop as well
+    const st = gs.schedule[tripId]?.find(s => s.stopId === stopId)
+    if (!st) continue
+    const t = st.deptSecs ?? st.arrSecs
     if (t == null) continue
+    const info = gs.tripInfo[tripId]
+    const serviceId = info?.serviceId
     // Today's own service
-    if (isServiceActiveOn(gs, e.serviceId, todayStr)) {
+    if (isServiceActiveOn(gs, serviceId, todayStr)) {
       const absSecs = todayMidnight + t
-      if (absSecs >= nowSecs) upcoming.push({ ...e, absSecs })
+      if (absSecs >= nowSecs) upcoming.push({ tripId, routeId: info?.routeId, headsign: info?.headsign, absSecs })
     }
     // Yesterday's service running past midnight (GTFS times can exceed 24:00:00) into this morning
-    if (t >= 86400 && isServiceActiveOn(gs, e.serviceId, yesterdayStr)) {
+    if (t >= 86400 && isServiceActiveOn(gs, serviceId, yesterdayStr)) {
       const absSecs = yesterdayMidnight + t
-      if (absSecs >= nowSecs) upcoming.push({ ...e, absSecs })
+      if (absSecs >= nowSecs) upcoming.push({ tripId, routeId: info?.routeId, headsign: info?.headsign, absSecs })
     }
   }
   upcoming.sort((a, b) => a.absSecs - b.absSecs)

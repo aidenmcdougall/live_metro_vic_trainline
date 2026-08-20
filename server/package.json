@@ -2,8 +2,8 @@
   "name": "live-metro-vic-server",
   "type": "module",
   "scripts": {
-    "dev": "node --watch index.js",
-    "start": "node index.js"
+    "dev": "node --expose-gc --watch index.js",
+    "start": "node --expose-gc index.js"
   },
   "dependencies": {
     "adm-zip": "^0.5.18",
