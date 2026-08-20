@@ -220,7 +220,10 @@
           </div>
 
           <!-- Stop timeline -->
-          <div v-if="tripSchedule.loading && !visibleTripStops.length" class="tdp-tl-loading">
+          <div v-if="tripSchedule.unavailable && !visibleTripStops.length" class="tdp-tl-loading">
+            Full stop-by-stop schedule isn't available for this network yet — showing live-reported stops only.
+          </div>
+          <div v-else-if="tripSchedule.loading && !visibleTripStops.length" class="tdp-tl-loading">
             Loading schedule...
           </div>
           <div v-if="visibleTripStops.length" class="tdp-timeline">
@@ -313,10 +316,13 @@
             </div>
           </div>
 
-          <div v-if="stopDepartures.loading && !stopDepartures.departures.length" class="tdp-tl-loading">
+          <div v-if="stopDepartures.unavailable" class="tdp-tl-loading">
+            Departure boards aren't available for this network yet.
+          </div>
+          <div v-else-if="stopDepartures.loading && !stopDepartures.departures.length" class="tdp-tl-loading">
             Loading departures...
           </div>
-          <div v-if="!stopDepartures.loading && !stopDepartures.departures.length" class="tdp-tl-loading">
+          <div v-else-if="!stopDepartures.loading && !stopDepartures.departures.length" class="tdp-tl-loading">
             No upcoming departures found.
           </div>
 
@@ -638,19 +644,19 @@ const selectedStopId = ref(null)
 const selectedStop = computed(() =>
   stops.value.find(s => s.id === selectedStopId.value) ?? null
 )
-const stopDepartures = ref({ departures: [], loading: false })
+const stopDepartures = ref({ departures: [], loading: false, unavailable: false })
 
 async function fetchStopDepartures(stopId) {
-  if (!stopId) { stopDepartures.value = { departures: [], loading: false }; return }
-  stopDepartures.value = { departures: stopDepartures.value.departures, loading: true }
+  if (!stopId) { stopDepartures.value = { departures: [], loading: false, unavailable: false }; return }
+  stopDepartures.value = { departures: stopDepartures.value.departures, loading: true, unavailable: false }
   try {
     const res = await fetch(`/api/stop-departures?stopId=${encodeURIComponent(stopId)}&network=${network.value}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
-    stopDepartures.value = { departures: data.departures ?? [], loading: data.loading ?? false }
+    stopDepartures.value = { departures: data.departures ?? [], loading: data.loading ?? false, unavailable: data.unavailable ?? false }
   } catch (e) {
     console.warn('Stop departures fetch failed:', e.message)
-    stopDepartures.value = { departures: [], loading: false }
+    stopDepartures.value = { departures: [], loading: false, unavailable: false }
   }
 }
 
@@ -901,8 +907,8 @@ async function fetchStops() {
 }
 
 async function fetchTripSchedule(tripId, startDate, silent = false) {
-  if (!tripId) { tripSchedule.value = { stops: [], loading: false, headsign: null }; return }
-  if (!silent) tripSchedule.value = { stops: [], loading: true, headsign: null }
+  if (!tripId) { tripSchedule.value = { stops: [], loading: false, headsign: null, unavailable: false }; return }
+  if (!silent) tripSchedule.value = { stops: [], loading: true, headsign: null, unavailable: false }
   try {
     const params = new URLSearchParams({ tripId, network: network.value })
     if (startDate) params.set('startDate', startDate)
@@ -913,6 +919,7 @@ async function fetchTripSchedule(tripId, startDate, silent = false) {
       stops: data.stops ?? [],
       loading: data.loading ?? false,
       headsign: data.headsign ?? null,
+      unavailable: data.unavailable ?? false,
     }
     // GTFS still loading server-side — retry after 2 s
     if (data.loading) {
@@ -922,7 +929,7 @@ async function fetchTripSchedule(tripId, startDate, silent = false) {
     }
   } catch (e) {
     console.warn('Trip schedule fetch failed:', e.message)
-    if (!silent) tripSchedule.value = { stops: [], loading: false, headsign: null }
+    if (!silent) tripSchedule.value = { stops: [], loading: false, headsign: null, unavailable: false }
   }
 }
 
@@ -931,7 +938,7 @@ watch(selectedVehicle, (v) => {
     fetchTripSchedule(v.tripId, v.startDate)
     fetchTripShape(v.tripId)
   } else {
-    tripSchedule.value = { stops: [], loading: false, headsign: null }
+    tripSchedule.value = { stops: [], loading: false, headsign: null, unavailable: false }
     tripShape.value = null
   }
 })
@@ -940,7 +947,7 @@ watch(network, () => {
   vehicles.value = []
   stops.value = []
   serviceAlerts.value = []
-  tripSchedule.value = { stops: [], loading: false, headsign: null }
+  tripSchedule.value = { stops: [], loading: false, headsign: null, unavailable: false }
   tripShape.value = null
   selectedVehicleId.value = null
   selectedStopId.value = null

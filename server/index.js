@@ -44,6 +44,13 @@ function resolveNetwork(q) {
   return VALID_NETWORKS.includes(q) ? q : 'vline'
 }
 
+// Metro and Tram's static GTFS (trip schedules, shapes) are 4-30x the row count of V/Line's —
+// parsing either one into memory alongside V/Line's already-tight footprint reliably exceeds a
+// 512MB host. Until that's restructured to not need everything resident at once, static-schedule
+// features (trip timelines, stop departure boards, route shapes) are V/Line-only; live positions,
+// delays, and service alerts are unaffected since those never need the static bundle.
+const STATIC_SCHEDULE_NETWORKS = ['vline']
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 let stopsCache = null
@@ -479,7 +486,10 @@ function enumName(list, value) {
 app.get('/api/service-alerts', async (req, res) => {
   const network = resolveNetwork(req.query.network)
 
-  if (!gtfsStatic[network]) {
+  // Metro/Tram's static GTFS is too large to keep in memory on this host (see loadGtfsStatic) —
+  // only V/Line gets the stop-id expansion below; other networks still get full alerts, just
+  // matched by route only rather than by stop.
+  if (STATIC_SCHEDULE_NETWORKS.includes(network) && !gtfsStatic[network]) {
     loadGtfsStatic(network).catch(e => console.error(`GTFS ${network} load failed:`, e.message))
   }
   const parentStationStops = gtfsStatic[network]?.parentStationStops ?? {}
@@ -630,6 +640,10 @@ app.get('/api/trip-schedule', async (req, res) => {
   const { tripId, startDate } = req.query
   if (!tripId) return res.status(400).json({ error: 'tripId required' })
 
+  if (!STATIC_SCHEDULE_NETWORKS.includes(network)) {
+    return res.json({ stops: [], headsign: null, unavailable: true })
+  }
+
   if (!gtfsStatic[network]) {
     loadGtfsStatic(network).catch(e => console.error(`GTFS ${network} load failed:`, e.message))
     return res.json({ stops: [], loading: true, headsign: null })
@@ -693,6 +707,7 @@ app.get('/api/trip-shape', (req, res) => {
   const network = resolveNetwork(req.query.network)
   const { tripId } = req.query
   if (!tripId) return res.status(400).json({ error: 'tripId required' })
+  if (!STATIC_SCHEDULE_NETWORKS.includes(network)) return res.json({ shape: null, unavailable: true })
   const gs = gtfsStatic[network]
   if (!gs) return res.json({ shape: null, loading: true })
   const shapeId = gs.tripInfo[tripId]?.shapeId
@@ -717,6 +732,10 @@ app.get('/api/stop-departures', async (req, res) => {
   const { stopId } = req.query
   const limit = Math.min(parseInt(req.query.limit) || 8, 30)
   if (!stopId) return res.status(400).json({ error: 'stopId required' })
+
+  if (!STATIC_SCHEDULE_NETWORKS.includes(network)) {
+    return res.json({ departures: [], unavailable: true })
+  }
 
   if (!gtfsStatic[network]) {
     loadGtfsStatic(network).catch(e => console.error(`GTFS ${network} load failed:`, e.message))
