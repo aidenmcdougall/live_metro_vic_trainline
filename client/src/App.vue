@@ -6,6 +6,15 @@
       </template>
       <template #end>
         <div class="toolbar-end">
+          <AutoComplete
+            v-model="searchQuery"
+            :suggestions="searchResults"
+            option-label="label"
+            placeholder="Search vehicle or route…"
+            class="vehicle-search"
+            @complete="searchVehicles"
+            @item-select="onSearchSelect"
+          />
           <SelectButton
             v-model="network"
             :options="networkOptions"
@@ -15,7 +24,7 @@
           />
           <Tag
             v-if="!error"
-            :value="`${vehicles.length} trains`"
+            :value="`${vehicles.length} ${vehicleNoun}`"
             severity="success"
             icon="pi pi-map-marker"
           />
@@ -36,7 +45,7 @@
     </Toolbar>
 
     <div class="map-wrapper">
-      <TrainMap ref="trainMapRef" :vehicles="vehicles" :stops="stops" :color="networkColor" :network="network" :selected-id="selectedVehicleId" :route-polyline="routePolyline" @train-selected="onTrainSelected" />
+      <TrainMap ref="trainMapRef" :vehicles="vehicles" :stops="stops" :color="networkColor" :network="network" :selected-id="selectedVehicleId" :route-polyline="routePolyline" @train-selected="onTrainSelected" @stop-selected="onStopSelected" />
       <ProgressBar v-if="loading && vehicles.length === 0" mode="indeterminate" class="loading-bar" />
 
       <div class="delay-panel" :class="{ 'delay-panel--collapsed': delayPanelCollapsed }" v-if="delayedVehicles.length">
@@ -157,6 +166,49 @@
           </div>
         </div>
       </Transition>
+
+      <!-- Station departure board -->
+      <Transition name="panel-slide">
+        <div v-if="selectedStop" class="train-detail-panel">
+          <div class="tdp-header">
+            <div class="tdp-header-main">
+              <div class="tdp-vehicle-id">{{ selectedStop.name }}</div>
+              <div class="tdp-headsign">Next departures</div>
+            </div>
+            <button class="tdp-close" @click="selectedStopId = null">✕</button>
+          </div>
+
+          <div v-if="stopDepartures.loading && !stopDepartures.departures.length" class="tdp-tl-loading">
+            Loading departures...
+          </div>
+          <div v-if="!stopDepartures.loading && !stopDepartures.departures.length" class="tdp-tl-loading">
+            No upcoming departures found.
+          </div>
+
+          <div class="tdp-fields" v-if="stopDepartures.departures.length">
+            <div
+              v-for="d in stopDepartures.departures"
+              :key="d.tripId"
+              class="tdp-row tdp-departure-row"
+              :class="{ 'delay-row--cancelled': d.cancelled }"
+            >
+              <span class="tdp-key tdp-departure-route">
+                <span class="tdp-departure-badge" :style="{ background: getVehicleColor(network, d.routeId, networkColor) }">{{ routeCode(d.routeId) }}</span>
+                Towards {{ d.headsign }}
+              </span>
+              <span class="tdp-val">
+                <template v-if="d.cancelled">CANC</template>
+                <template v-else>
+                  {{ formatJourneyTime(d.estTime ?? d.schedTime) }}
+                  <span v-if="d.delayMins" :class="d.delayMins > 0 ? 'tdp-tl-delay tdp-tl-delay--late' : 'tdp-tl-delay tdp-tl-delay--early'">
+                    {{ d.delayMins > 0 ? '+' + d.delayMins + 'm' : d.delayMins + 'm' }}
+                  </span>
+                </template>
+              </span>
+            </div>
+          </div>
+        </div>
+      </Transition>
     </div>
   </div>
 </template>
@@ -168,43 +220,61 @@ import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import ProgressBar from 'primevue/progressbar'
 import SelectButton from 'primevue/selectbutton'
+import AutoComplete from 'primevue/autocomplete'
 import TrainMap from './components/TrainMap.vue'
 import { getFleetInfo } from './data/metro-fleet.js'
 import { getVLineFleetInfo } from './data/vline-fleet.js'
+import { NETWORK_COLORS, getVehicleColor } from './data/route-colors.js'
+import { isDisplayStop } from './data/stop-filters.js'
 
 const networkOptions = [
   { label: 'V/Line', value: 'vline' },
   { label: 'Metro',  value: 'metro' },
+  { label: 'Tram',   value: 'tram' },
 ]
-
-const NETWORK_COLORS = {
-  vline: '#a855f7',
-  metro: '#3b82f6',
-}
-
-const METRO_ROUTE_COLORS = {
-  WER: '#f472b6', LAV: '#f472b6', WIL: '#f472b6', SHM: '#f472b6',
-  SUY: '#38bdf8', CBE: '#38bdf8', PKM: '#38bdf8',
-  UFD: '#fbbf24', CGB: '#fbbf24',
-  HBE: '#ef4444', MDD: '#ef4444',
-  LIL: '#1d4ed8', BEG: '#1d4ed8', ALM: '#1d4ed8', GWY: '#1d4ed8',
-  FKN: '#16a34a',
-}
 
 const trainMapRef = ref(null)
 const network = ref('vline')
 const networkColor = computed(() => NETWORK_COLORS[network.value])
+const vehicleNoun = computed(() => network.value === 'tram' ? 'trams' : 'trains')
 
 const selectedVehicleColor = computed(() => {
-  if (network.value === 'metro' && selectedVehicle.value?.routeId) {
-    const code = selectedVehicle.value.routeId.split('-').pop()?.replace(/:/g, '')
-    return METRO_ROUTE_COLORS[code] ?? networkColor.value
-  }
-  return networkColor.value
+  if (!selectedVehicle.value?.routeId) return networkColor.value
+  return getVehicleColor(network.value, selectedVehicle.value.routeId, networkColor.value)
 })
 
 function routeCode(routeId) {
   return routeId?.split('-').pop()?.replace(/:/g, '') ?? '—'
+}
+
+const searchQuery = ref('')
+const searchResults = ref([])
+
+function searchVehicles(event) {
+  const q = event.query.trim().toLowerCase()
+  if (!q) { searchResults.value = []; return }
+  const vehicleMatches = vehicles.value
+    .filter(v => v.vehicleId?.toLowerCase().includes(q) || routeCode(v.routeId).toLowerCase().includes(q))
+    .slice(0, 10)
+    .map(v => ({ kind: 'vehicle', id: v.id, label: `🚋 ${v.vehicleId ?? v.id} · Route ${routeCode(v.routeId)}` }))
+  const stopMatches = stops.value
+    .filter(s => isDisplayStop(s, network.value) && s.name?.toLowerCase().includes(q))
+    .slice(0, 10)
+    .map(s => ({ kind: 'stop', id: s.id, label: `🚉 ${s.name}` }))
+  searchResults.value = [...vehicleMatches, ...stopMatches].slice(0, 15)
+}
+
+function onSearchSelect(event) {
+  const item = event.value
+  if (item.kind === 'stop') {
+    onStopSelected(item.id)
+    const coords = stopCoordsMap.value[item.id]
+    if (coords) trainMapRef.value?.focusStop(coords.lat, coords.lng)
+  } else {
+    trainMapRef.value?.focusVehicle(item.id)
+  }
+  searchQuery.value = ''
+  searchResults.value = []
 }
 
 const delayedVehicles = computed(() => {
@@ -222,6 +292,33 @@ const selectedVehicleId = ref(null)
 const selectedVehicle = computed(() =>
   vehicles.value.find(v => v.id === selectedVehicleId.value) ?? null
 )
+
+const selectedStopId = ref(null)
+const selectedStop = computed(() =>
+  stops.value.find(s => s.id === selectedStopId.value) ?? null
+)
+const stopDepartures = ref({ departures: [], loading: false })
+
+async function fetchStopDepartures(stopId) {
+  if (!stopId) { stopDepartures.value = { departures: [], loading: false }; return }
+  stopDepartures.value = { departures: stopDepartures.value.departures, loading: true }
+  try {
+    const res = await fetch(`/api/stop-departures?stopId=${encodeURIComponent(stopId)}&network=${network.value}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    stopDepartures.value = { departures: data.departures ?? [], loading: data.loading ?? false }
+  } catch (e) {
+    console.warn('Stop departures fetch failed:', e.message)
+    stopDepartures.value = { departures: [], loading: false }
+  }
+}
+
+function onStopSelected(id) {
+  selectedStopId.value = id
+  selectedVehicleId.value = null
+}
+
+watch(selectedStopId, (id) => fetchStopDepartures(id))
 
 function cleanStopName(name) {
   if (!name) return null
@@ -337,6 +434,7 @@ const tdpUpdatedTime = computed(() => {
 
 function onTrainSelected(id) {
   selectedVehicleId.value = id
+  selectedStopId.value = null
 }
 
 const vehicles = ref([])
@@ -437,6 +535,7 @@ async function refresh() {
 
     const sv = selectedVehicle.value
     if (sv) fetchTripSchedule(sv.tripId, sv.startDate, true)
+    if (selectedStopId.value) fetchStopDepartures(selectedStopId.value)
   } catch (e) {
     error.value = e.message
     console.error('Fetch error:', e)
@@ -497,6 +596,8 @@ watch(network, () => {
   stops.value = []
   tripSchedule.value = { stops: [], loading: false, headsign: null }
   tripShape.value = null
+  selectedVehicleId.value = null
+  selectedStopId.value = null
   refresh()
   fetchStops()
 })
@@ -544,6 +645,10 @@ onUnmounted(() => clearInterval(pollInterval))
 .last-updated {
   font-size: 0.8rem;
   color: var(--p-text-muted-color);
+}
+
+.vehicle-search input {
+  width: 180px;
 }
 
 .map-wrapper {
@@ -919,6 +1024,33 @@ onUnmounted(() => clearInterval(pollInterval))
 .tdp-val--ontime   { color: #4ade80; }
 .tdp-val--delayed  { color: #fbbf24; font-weight: 600; }
 .tdp-val--cancelled { color: #f87171; font-weight: 600; }
+
+.tdp-departure-row {
+  align-items: center;
+}
+
+.tdp-departure-route {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.tdp-departure-badge {
+  flex-shrink: 0;
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #0a0a0f;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-right: 7px;
+}
+
+.tdp-departure-row.delay-row--cancelled .tdp-departure-route,
+.tdp-departure-row.delay-row--cancelled .tdp-val {
+  color: #9ca3af;
+  text-decoration: line-through;
+}
 
 .tdp-tl-loading {
   padding: 14px 14px;

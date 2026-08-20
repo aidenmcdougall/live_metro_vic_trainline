@@ -3,7 +3,7 @@ import cors from 'cors'
 import axios from 'axios'
 import GtfsRealtimeBindings from 'gtfs-realtime-bindings'
 import AdmZip from 'adm-zip'
-import { readFileSync } from 'fs'
+import { readFileSync, writeFileSync, renameSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { config } from 'dotenv'
@@ -18,16 +18,24 @@ app.use(cors())
 const API_URLS = {
   vline: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/vline/vehicle-positions',
   metro: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/metro/vehicle-positions',
+  tram: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/tram/vehicle-positions',
 }
 
 const TRIP_UPDATE_URLS = {
   vline: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/vline/trip-updates',
   metro: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/metro/trip-updates',
+  tram: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/tram/trip-updates',
 }
 
 const STOP_MODES = {
   vline: 'REGIONAL TRAIN',
   metro: 'METRO TRAIN',
+  tram: 'METRO TRAM',
+}
+
+const VALID_NETWORKS = ['vline', 'metro', 'tram']
+function resolveNetwork(q) {
+  return VALID_NETWORKS.includes(q) ? q : 'vline'
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -49,8 +57,44 @@ function getAllStops() {
 
 // ── GTFS static schedule ──────────────────────────────────────────────────────
 
-const GTFS_INNER_ZIPS = { vline: '1/google_transit.zip', metro: '2/google_transit.zip' }
+const GTFS_INNER_ZIPS = { vline: '1/google_transit.zip', metro: '2/google_transit.zip', tram: '3/google_transit.zip' }
 const gtfsStatic = {}
+
+// Vic's static GTFS bundle is republished weekly with only a rolling 30-day validity window,
+// so the local copy needs refreshing periodically or realtime trip IDs stop matching it.
+const GTFS_DOWNLOAD_URL = 'https://opendata.transport.vic.gov.au/dataset/3f4e292e-7f8a-4ffe-831f-1953be0fe448/resource/fb152201-859f-4882-9206-b768060b50ad/download/gtfs.zip'
+const GTFS_ZIP_PATH = join(__dirname, 'gtfs.zip')
+const GTFS_ETAG_PATH = join(__dirname, 'gtfs.zip.etag')
+const GTFS_REFRESH_INTERVAL_MS = 24 * 3600 * 1000
+
+async function refreshGtfsZip() {
+  let previousEtag = null
+  try { previousEtag = readFileSync(GTFS_ETAG_PATH, 'utf8').trim() } catch {}
+
+  try {
+    const response = await axios.get(GTFS_DOWNLOAD_URL, {
+      headers: previousEtag ? { 'If-None-Match': previousEtag } : {},
+      responseType: 'arraybuffer',
+      validateStatus: s => s === 200 || s === 304,
+    })
+
+    if (response.status === 304) {
+      console.log('GTFS static bundle unchanged upstream, keeping local copy')
+      return
+    }
+
+    const tmpPath = `${GTFS_ZIP_PATH}.tmp`
+    writeFileSync(tmpPath, response.data)
+    renameSync(tmpPath, GTFS_ZIP_PATH)
+    const etag = response.headers.etag
+    if (etag) writeFileSync(GTFS_ETAG_PATH, etag)
+
+    for (const k of Object.keys(gtfsStatic)) delete gtfsStatic[k]
+    console.log(`GTFS static bundle refreshed (${(response.data.byteLength / 1e6).toFixed(1)} MB) — caches cleared, will reload lazily`)
+  } catch (err) {
+    console.error('GTFS bundle refresh failed, keeping existing local copy:', err.message)
+  }
+}
 
 function splitCsvRow(line) {
   const result = []
@@ -117,12 +161,60 @@ async function loadGtfsStatic(network) {
   }
   for (const tid of Object.keys(schedule)) schedule[tid].sort((a, b) => a.seq - b.seq)
 
-  // trips → { headsign, shapeId }
+  // trips → { headsign, shapeId, routeId, serviceId }
   const tripInfo = {}
   const tripsEntry = inner.getEntry('trips.txt')
   if (tripsEntry) {
     for (const r of parseGtfsCsv(tripsEntry.getData().toString('utf8'))) {
-      if (r.trip_id) tripInfo[r.trip_id] = { headsign: r.trip_headsign ?? '', shapeId: r.shape_id ?? '' }
+      if (r.trip_id) tripInfo[r.trip_id] = {
+        headsign: r.trip_headsign ?? '',
+        shapeId: r.shape_id ?? '',
+        routeId: r.route_id ?? null,
+        serviceId: r.service_id ?? null,
+      }
+    }
+  }
+
+  // calendar.txt → { serviceId: { monday..sunday, startDate, endDate } }
+  const calendar = {}
+  const calEntry = inner.getEntry('calendar.txt')
+  if (calEntry) {
+    for (const r of parseGtfsCsv(calEntry.getData().toString('utf8'))) {
+      if (!r.service_id) continue
+      calendar[r.service_id] = {
+        monday: r.monday, tuesday: r.tuesday, wednesday: r.wednesday, thursday: r.thursday,
+        friday: r.friday, saturday: r.saturday, sunday: r.sunday,
+        startDate: r.start_date, endDate: r.end_date,
+      }
+    }
+  }
+
+  // calendar_dates.txt → { serviceId: { dateStr: exceptionType } } — per-date add(1)/remove(2) overrides
+  const calendarExceptions = {}
+  const calDatesEntry = inner.getEntry('calendar_dates.txt')
+  if (calDatesEntry) {
+    for (const r of parseGtfsCsv(calDatesEntry.getData().toString('utf8'))) {
+      if (!r.service_id || !r.date) continue
+      if (!calendarExceptions[r.service_id]) calendarExceptions[r.service_id] = {}
+      calendarExceptions[r.service_id][r.date] = r.exception_type
+    }
+  }
+
+  // stopId → every scheduled stop-time across all trips, for the departure-board lookup
+  const stopDepartures = {}
+  for (const [tripId, stopTimes] of Object.entries(schedule)) {
+    const info = tripInfo[tripId]
+    if (!info) continue
+    for (const st of stopTimes) {
+      if (!stopDepartures[st.stopId]) stopDepartures[st.stopId] = []
+      stopDepartures[st.stopId].push({
+        tripId,
+        routeId: info.routeId,
+        headsign: info.headsign,
+        serviceId: info.serviceId,
+        arrSecs: st.arrSecs,
+        deptSecs: st.deptSecs,
+      })
     }
   }
 
@@ -151,18 +243,48 @@ async function loadGtfsStatic(network) {
     }
   }
 
-  gtfsStatic[network] = { schedule, tripInfo, stopNames, shapes }
+  gtfsStatic[network] = { schedule, tripInfo, stopNames, shapes, calendar, calendarExceptions, stopDepartures }
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
   const shapeCount = Object.keys(shapes).length
   console.log(`GTFS static ready (${network}): ${Object.keys(schedule).length} trips, ${stRows.length} stop times, ${shapeCount} shapes [${elapsed}s]`)
+}
+
+const WEEKDAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+
+function isServiceActiveOn(gs, serviceId, dateStr) {
+  const exception = gs.calendarExceptions[serviceId]?.[dateStr]
+  if (exception === '1') return true
+  if (exception === '2') return false
+  const cal = gs.calendar[serviceId]
+  if (!cal) return false
+  if (dateStr < cal.startDate || dateStr > cal.endDate) return false
+  const dow = new Date(Date.UTC(+dateStr.slice(0, 4), +dateStr.slice(4, 6) - 1, +dateStr.slice(6, 8))).getUTCDay()
+  return cal[WEEKDAY_KEYS[dow]] === '1'
+}
+
+// "YYYYMMDD" as of a given moment, in Melbourne's UTC+10 calendar date (matches the existing +10:00 convention below)
+function melbDateStr(ms) {
+  const shifted = new Date(ms + 10 * 3600 * 1000)
+  const y = shifted.getUTCFullYear()
+  const mo = String(shifted.getUTCMonth() + 1).padStart(2, '0')
+  const d = String(shifted.getUTCDate()).padStart(2, '0')
+  return `${y}${mo}${d}`
+}
+
+function gtfsMidnightSecs(dateStr) {
+  const y = dateStr.slice(0, 4), mo = dateStr.slice(4, 6), d = dateStr.slice(6, 8)
+  return Math.floor(new Date(`${y}-${mo}-${d}T00:00:00+10:00`).getTime() / 1000)
 }
 
 // Bind the port immediately so the client can connect while GTFS parses in the background
 const PORT = process.env.PORT || 3001
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`)
-  // Load V/Line GTFS after port is bound; Metro loads lazily on first request
-  loadGtfsStatic('vline').catch(e => console.error('GTFS vline load failed:', e.message))
+  // Check for a fresher GTFS bundle before doing the initial load, then keep checking daily
+  refreshGtfsZip().finally(() => {
+    loadGtfsStatic('vline').catch(e => console.error('GTFS vline load failed:', e.message))
+  })
+  setInterval(() => refreshGtfsZip(), GTFS_REFRESH_INTERVAL_MS)
 })
 
 // ── Trip update feed cache ────────────────────────────────────────────────────
@@ -192,7 +314,7 @@ async function fetchTripUpdateFeed(network) {
 }
 
 app.get('/api/vehicles', async (_req, res) => {
-  const network = _req.query.network === 'metro' ? 'metro' : 'vline'
+  const network = resolveNetwork(_req.query.network)
   const apiUrl = API_URLS[network]
   const apiKey = process.env.API_KEY
 
@@ -242,7 +364,7 @@ app.get('/api/vehicles', async (_req, res) => {
 })
 
 app.get('/api/trip-updates', async (_req, res) => {
-  const network = _req.query.network === 'metro' ? 'metro' : 'vline'
+  const network = resolveNetwork(_req.query.network)
 
   try {
     const feed = await fetchTripUpdateFeed(network)
@@ -288,7 +410,7 @@ app.get('/api/trip-updates', async (_req, res) => {
 })
 
 app.get('/api/trip-schedule', async (req, res) => {
-  const network = req.query.network === 'metro' ? 'metro' : 'vline'
+  const network = resolveNetwork(req.query.network)
   const { tripId, startDate } = req.query
   if (!tripId) return res.status(400).json({ error: 'tripId required' })
 
@@ -352,7 +474,7 @@ app.get('/api/trip-schedule', async (req, res) => {
 })
 
 app.get('/api/trip-shape', (req, res) => {
-  const network = req.query.network === 'metro' ? 'metro' : 'vline'
+  const network = resolveNetwork(req.query.network)
   const { tripId } = req.query
   if (!tripId) return res.status(400).json({ error: 'tripId required' })
   const gs = gtfsStatic[network]
@@ -363,7 +485,7 @@ app.get('/api/trip-shape', (req, res) => {
 })
 
 app.get('/api/stops', (req, res) => {
-  const network = req.query.network === 'metro' ? 'metro' : 'vline'
+  const network = resolveNetwork(req.query.network)
   try {
     const mode = STOP_MODES[network]
     const stops = getAllStops().filter(s => s.mode === mode)
@@ -372,5 +494,101 @@ app.get('/api/stops', (req, res) => {
     console.error(`Failed to load stops (${network}):`, err.message)
     res.status(500).json({ error: err.message })
   }
+})
+
+app.get('/api/stop-departures', async (req, res) => {
+  const network = resolveNetwork(req.query.network)
+  const { stopId } = req.query
+  const limit = Math.min(parseInt(req.query.limit) || 8, 30)
+  if (!stopId) return res.status(400).json({ error: 'stopId required' })
+
+  if (!gtfsStatic[network]) {
+    loadGtfsStatic(network).catch(e => console.error(`GTFS ${network} load failed:`, e.message))
+    return res.json({ departures: [], loading: true })
+  }
+
+  const gs = gtfsStatic[network]
+  const entries = gs.stopDepartures[stopId] ?? []
+  if (!entries.length) return res.json({ departures: [] })
+
+  const nowMs = Date.now()
+  const nowSecs = Math.floor(nowMs / 1000)
+  const todayStr = melbDateStr(nowMs)
+  const yesterdayStr = melbDateStr(nowMs - 86400000)
+  const todayMidnight = gtfsMidnightSecs(todayStr)
+  const yesterdayMidnight = gtfsMidnightSecs(yesterdayStr)
+
+  const upcoming = []
+  for (const e of entries) {
+    const t = e.deptSecs ?? e.arrSecs
+    if (t == null) continue
+    // Today's own service
+    if (isServiceActiveOn(gs, e.serviceId, todayStr)) {
+      const absSecs = todayMidnight + t
+      if (absSecs >= nowSecs) upcoming.push({ ...e, absSecs })
+    }
+    // Yesterday's service running past midnight (GTFS times can exceed 24:00:00) into this morning
+    if (t >= 86400 && isServiceActiveOn(gs, e.serviceId, yesterdayStr)) {
+      const absSecs = yesterdayMidnight + t
+      if (absSecs >= nowSecs) upcoming.push({ ...e, absSecs })
+    }
+  }
+  upcoming.sort((a, b) => a.absSecs - b.absSecs)
+  const nextDepartures = upcoming.slice(0, limit)
+
+  // Overlay realtime delay/cancellation for whichever of these trips are currently in the feed.
+  // Some networks' realtime trip IDs never agree with their own static trip_id (Metro's GTFS-RT
+  // uses a different ID scheme entirely) so an exact-tripId match alone would silently find nothing —
+  // fall back to the nearest same-route candidate at this stop within a plausible delay window.
+  const realtimeCandidates = []
+  try {
+    const feed = await fetchTripUpdateFeed(network)
+    for (const e of feed.entity) {
+      const tu = e.tripUpdate
+      if (!tu?.trip) continue
+      const stu = (tu.stopTimeUpdate ?? []).find(s => s.stopId === stopId)
+      if (!stu) continue
+      const sr = tu.trip.scheduleRelationship
+      realtimeCandidates.push({
+        tripId: tu.trip.tripId ?? null,
+        routeId: tu.trip.routeId ?? null,
+        delay: stu.departure?.delay ?? stu.arrival?.delay ?? null,
+        actual: stu.departure?.time ? Number(stu.departure.time) : (stu.arrival?.time ? Number(stu.arrival.time) : null),
+        cancelled: sr === 3 || sr === 'CANCELED' || sr === 'CANCELLED',
+      })
+    }
+  } catch {}
+
+  const RT_MATCH_WINDOW_SECS = 6 * 60
+  const usedCandidates = new Set()
+  function matchRealtime(d) {
+    const exact = realtimeCandidates.find(c => !usedCandidates.has(c) && c.tripId === d.tripId)
+    if (exact) return exact
+    let best = null, bestDiff = Infinity
+    for (const c of realtimeCandidates) {
+      if (usedCandidates.has(c) || c.routeId !== d.routeId || c.actual == null) continue
+      const diff = Math.abs(c.actual - d.absSecs)
+      if (diff <= RT_MATCH_WINDOW_SECS && diff < bestDiff) { best = c; bestDiff = diff }
+    }
+    return best
+  }
+
+  const departures = nextDepartures.map(d => {
+    const rt = matchRealtime(d)
+    if (rt) usedCandidates.add(rt)
+    const delayMins = rt?.delay != null ? Math.round(rt.delay / 60) : null
+    const estTime = rt?.actual ?? (rt?.delay != null ? d.absSecs + rt.delay : null)
+    return {
+      tripId: d.tripId,
+      routeId: d.routeId,
+      headsign: d.headsign,
+      schedTime: d.absSecs,
+      estTime,
+      delayMins,
+      cancelled: rt?.cancelled ?? false,
+    }
+  })
+
+  res.json({ departures })
 })
 

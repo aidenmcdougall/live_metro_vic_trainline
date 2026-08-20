@@ -6,6 +6,8 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { getVehicleColor } from '../data/route-colors.js'
+import { isDisplayStop } from '../data/stop-filters.js'
 const props = defineProps({
   vehicles: {
     type: Array,
@@ -33,7 +35,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['train-selected'])
+const emit = defineEmits(['train-selected', 'stop-selected'])
 
 const mapEl = ref(null)
 let map = null
@@ -55,9 +57,11 @@ function stopIcon() {
 function syncStops(stops) {
   if (!stopsLayer) return
   stopsLayer.clearLayers()
-  for (const stop of stops.filter(s => s.name?.endsWith('Railway Station'))) {
+  const filtered = stops.filter(s => isDisplayStop(s, props.network))
+  for (const stop of filtered) {
     L.marker([stop.lat, stop.lng], { icon: stopIcon(), zIndexOffset: -500 })
       .bindTooltip(stop.name, { direction: 'top', offset: [0, -8], className: 'stop-tooltip' })
+      .on('click', (e) => { L.DomEvent.stopPropagation(e); emit('stop-selected', stop.id) })
       .addTo(stopsLayer)
   }
   updateStopsVisibility()
@@ -89,26 +93,14 @@ function updateStopsVisibility() {
   }
 }
 
-const METRO_ROUTE_COLORS = {
-  WER: '#f472b6', LAV: '#f472b6', WIL: '#f472b6', SHM: '#f472b6',
-  SUY: '#38bdf8', CBE: '#38bdf8', PKM: '#38bdf8',
-  UFD: '#fbbf24', CGB: '#fbbf24',
-  HBE: '#ef4444', MDD: '#ef4444',
-  LIL: '#1d4ed8', BEG: '#1d4ed8', ALM: '#1d4ed8', GWY: '#1d4ed8',
-  FKN: '#16a34a',
-}
-
 function vehicleColor(v) {
-  if (props.network === 'metro') {
-    const code = v.routeId?.split('-').pop()?.replace(/:/g, '')
-    return METRO_ROUTE_COLORS[code] ?? props.color
-  }
-  return props.color
+  return getVehicleColor(props.network, v.routeId, props.color)
 }
 
 const NETWORK_VIEWS = {
   vline: { center: [-37.69214941267092, 144.95849150482715], zoom: 9 },
   metro: { center: [-37.86044296365716, 144.9438085965693],  zoom: 11 },
+  tram:  { center: [-37.82301718075124, 144.97199896419994], zoom: 12 },
 }
 
 const INITIAL_ZOOM = NETWORK_VIEWS.vline.zoom
@@ -173,7 +165,7 @@ function syncMarkers(vehicles) {
   }
 
   for (const v of vehicles) {
-    const carriages = props.network === 'metro' ? 6 : (v.tripId?.includes('BDE') ? 6 : 3)
+    const carriages = props.network === 'metro' ? 6 : props.network === 'tram' ? 1 : (v.tripId?.includes('BDE') ? 6 : 3)
     const color = vehicleColor(v)
     const icon = trainIcon(v.bearing, carriages, color, v.delay, v.cancelled)
     if (markerMap[v.id]) {
@@ -202,7 +194,12 @@ function focusVehicle(vehicleId) {
   setTimeout(() => emit('train-selected', vehicleId), 1100)
 }
 
-defineExpose({ focusVehicle })
+function focusStop(lat, lng) {
+  const targetZoom = Math.max(map.getZoom(), 15)
+  map?.flyTo([lat, lng], targetZoom, { animate: true, duration: 1 })
+}
+
+defineExpose({ focusVehicle, focusStop })
 
 watch(() => props.vehicles, syncMarkers)
 watch(() => props.color, () => syncMarkers(props.vehicles))
