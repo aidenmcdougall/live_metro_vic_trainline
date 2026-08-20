@@ -27,6 +27,12 @@ const TRIP_UPDATE_URLS = {
   tram: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/tram/trip-updates',
 }
 
+const SERVICE_ALERT_URLS = {
+  vline: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/vline/service-alerts',
+  metro: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/metro/service-alerts',
+  tram: 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/tram/service-alerts',
+}
+
 const STOP_MODES = {
   vline: 'REGIONAL TRAIN',
   metro: 'METRO TRAIN',
@@ -218,12 +224,19 @@ async function loadGtfsStatic(network) {
     }
   }
 
-  // stops → name map
+  // stops → name map, and parent_station (e.g. "vic:rail:JOR") → [stop_id,...]
+  // Service alerts identify stops by parent_station, not the numeric stop_id the rest of the app uses.
   const stopNames = {}
+  const parentStationStops = {}
   const stopsEntry = inner.getEntry('stops.txt')
   if (stopsEntry) {
     for (const r of parseGtfsCsv(stopsEntry.getData().toString('utf8'))) {
-      if (r.stop_id) stopNames[r.stop_id] = r.stop_name ?? ''
+      if (!r.stop_id) continue
+      stopNames[r.stop_id] = r.stop_name ?? ''
+      if (r.parent_station) {
+        if (!parentStationStops[r.parent_station]) parentStationStops[r.parent_station] = []
+        parentStationStops[r.parent_station].push(r.stop_id)
+      }
     }
   }
 
@@ -243,7 +256,7 @@ async function loadGtfsStatic(network) {
     }
   }
 
-  gtfsStatic[network] = { schedule, tripInfo, stopNames, shapes, calendar, calendarExceptions, stopDepartures }
+  gtfsStatic[network] = { schedule, tripInfo, stopNames, shapes, calendar, calendarExceptions, stopDepartures, parentStationStops }
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
   const shapeCount = Object.keys(shapes).length
   console.log(`GTFS static ready (${network}): ${Object.keys(schedule).length} trips, ${stRows.length} stop times, ${shapeCount} shapes [${elapsed}s]`)
@@ -312,6 +325,88 @@ async function fetchTripUpdateFeed(network) {
   tripUpdateFeedCache[network] = { feed, ts: Date.now() }
   return feed
 }
+
+const serviceAlertFeedCache = {}
+
+async function fetchServiceAlertFeed(network) {
+  const c = serviceAlertFeedCache[network]
+  if (c && (Date.now() - c.ts) < 60000) return c.feed
+  const apiKey = process.env.API_KEY
+  const response = await axios.get(SERVICE_ALERT_URLS[network], {
+    headers: apiKey ? { KeyId: apiKey, 'Ocp-Apim-Subscription-Key': apiKey } : {},
+    responseType: 'arraybuffer',
+  })
+  const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(new Uint8Array(response.data))
+  serviceAlertFeedCache[network] = { feed, ts: Date.now() }
+  return feed
+}
+
+const ALERT_CAUSES = ['UNKNOWN_CAUSE', 'OTHER_CAUSE', 'TECHNICAL_PROBLEM', 'STRIKE', 'DEMONSTRATION', 'ACCIDENT', 'HOLIDAY', 'WEATHER', 'MAINTENANCE', 'CONSTRUCTION', 'POLICE_ACTIVITY', 'MEDICAL_EMERGENCY']
+const ALERT_EFFECTS = ['NO_SERVICE', 'REDUCED_SERVICE', 'SIGNIFICANT_DELAYS', 'DETOUR', 'ADDITIONAL_SERVICE', 'MODIFIED_SERVICE', 'OTHER_EFFECT', 'UNKNOWN_EFFECT', 'STOP_MOVED', 'NO_EFFECT', 'ACCESSIBILITY_ISSUE']
+
+function translatedText(field) {
+  if (!field?.translation?.length) return null
+  const en = field.translation.find(t => !t.language || t.language.startsWith('en'))
+  return (en ?? field.translation[0]).text ?? null
+}
+
+function enumName(list, value) {
+  if (value == null) return null
+  return typeof value === 'string' ? value : (list[value] ?? null)
+}
+
+app.get('/api/service-alerts', async (req, res) => {
+  const network = resolveNetwork(req.query.network)
+
+  if (!gtfsStatic[network]) {
+    loadGtfsStatic(network).catch(e => console.error(`GTFS ${network} load failed:`, e.message))
+  }
+  const parentStationStops = gtfsStatic[network]?.parentStationStops ?? {}
+
+  try {
+    const feed = await fetchServiceAlertFeed(network)
+    const now = Math.floor(Date.now() / 1000)
+
+    const alerts = feed.entity
+      .filter(e => e.alert)
+      .map(e => {
+        const a = e.alert
+        const activePeriods = (a.activePeriod ?? []).map(p => ({
+          start: p.start != null ? Number(p.start) : null,
+          end: p.end != null ? Number(p.end) : null,
+        }))
+        const isActive = !activePeriods.length || activePeriods.some(p =>
+          (p.start == null || p.start <= now) && (p.end == null || p.end >= now)
+        )
+        return {
+          id: e.id,
+          cause: enumName(ALERT_CAUSES, a.cause),
+          effect: enumName(ALERT_EFFECTS, a.effect),
+          header: translatedText(a.headerText),
+          description: translatedText(a.descriptionText),
+          url: translatedText(a.url),
+          activePeriods,
+          isActive,
+          informed: (a.informedEntity ?? []).map(ie => ({
+            routeId: ie.routeId ?? null,
+            stopId: ie.stopId ?? null,
+            stopIds: ie.stopId ? (parentStationStops[ie.stopId] ?? [ie.stopId]) : [],
+            tripId: ie.trip?.tripId ?? null,
+          })),
+        }
+      })
+      .filter(a => a.isActive)
+
+    res.json({ alerts })
+  } catch (err) {
+    if (err.response) {
+      console.error('Service alerts upstream error:', err.response.status)
+    } else {
+      console.error('Service alerts error:', err.message)
+    }
+    res.status(502).json({ error: 'Failed to fetch service alerts' })
+  }
+})
 
 app.get('/api/vehicles', async (_req, res) => {
   const network = resolveNetwork(_req.query.network)

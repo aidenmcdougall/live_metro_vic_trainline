@@ -22,6 +22,67 @@
             option-value="value"
             :allow-empty="false"
           />
+          <Button
+            icon="pi pi-star-fill"
+            :severity="hasFavourites ? 'warn' : 'secondary'"
+            text
+            rounded
+            aria-label="Pinned & recent stations"
+            @click="toggleFavouritesPopover"
+          />
+          <Popover ref="favouritesPopoverRef">
+            <div class="fav-popover">
+              <div class="fav-section">
+                <div class="fav-section__title fav-section__title--row">
+                  <span>Nearby</span>
+                  <button
+                    v-if="userLocation"
+                    class="fav-relocate"
+                    :disabled="locating"
+                    title="Refresh location"
+                    @click="useMyLocation"
+                  >↻</button>
+                </div>
+                <div v-if="locationError" class="fav-empty">{{ locationError }}</div>
+                <button v-else-if="!userLocation" class="fav-locate-btn" :disabled="locating" @click="useMyLocation">
+                  {{ locating ? 'Locating…' : '📍 Use my location' }}
+                </button>
+                <template v-else>
+                  <div v-for="s in nearbyStops" :key="'n:' + stopKey(s)" class="fav-item">
+                    <span class="fav-item__link" @click="goToFavourite(s)">
+                      <span class="fav-item__label">{{ s.name }}</span>
+                      <span class="fav-item__net">{{ formatDistance(s.distanceMeters) }}</span>
+                    </span>
+                    <button class="fav-item__pin" :class="{ 'fav-item__pin--active': isStopPinned(s) }" @click="togglePinStop(s)" aria-label="Pin">★</button>
+                  </div>
+                  <div v-if="!nearbyStops.length" class="fav-empty">No stations found nearby.</div>
+                </template>
+              </div>
+              <div class="fav-section" v-if="pinnedStops.length">
+                <div class="fav-section__title">Pinned</div>
+                <div v-for="s in pinnedStops" :key="'p:' + stopKey(s)" class="fav-item">
+                  <span class="fav-item__link" @click="goToFavourite(s)">
+                    <span class="fav-item__label">{{ s.name }}</span>
+                    <span v-if="s.network !== network" class="fav-item__net">{{ s.network }}</span>
+                  </span>
+                  <button class="fav-item__pin fav-item__pin--active" @click="togglePinStop(s)" aria-label="Unpin">★</button>
+                </div>
+              </div>
+              <div class="fav-section" v-if="recentStopsForDisplay.length">
+                <div class="fav-section__title">Recent</div>
+                <div v-for="s in recentStopsForDisplay" :key="'r:' + stopKey(s)" class="fav-item">
+                  <span class="fav-item__link" @click="goToFavourite(s)">
+                    <span class="fav-item__label">{{ s.name }}</span>
+                    <span v-if="s.network !== network" class="fav-item__net">{{ s.network }}</span>
+                  </span>
+                  <button class="fav-item__pin" @click="togglePinStop(s)" aria-label="Pin">★</button>
+                </div>
+              </div>
+              <div class="fav-empty" v-if="!pinnedStops.length && !recentStopsForDisplay.length">
+                No pinned or recent stations yet — search or tap a station to add one.
+              </div>
+            </div>
+          </Popover>
           <Tag
             v-if="!error"
             :value="`${vehicles.length} ${vehicleNoun}`"
@@ -48,30 +109,60 @@
       <TrainMap ref="trainMapRef" :vehicles="vehicles" :stops="stops" :color="networkColor" :network="network" :selected-id="selectedVehicleId" :route-polyline="routePolyline" @train-selected="onTrainSelected" @stop-selected="onStopSelected" />
       <ProgressBar v-if="loading && vehicles.length === 0" mode="indeterminate" class="loading-bar" />
 
-      <div class="delay-panel" :class="{ 'delay-panel--collapsed': delayPanelCollapsed }" v-if="delayedVehicles.length">
-        <div class="delay-panel__title" @click="delayPanelCollapsed = !delayPanelCollapsed">
-          <span class="delay-panel__title-text">
-            <span v-if="delayPanelCollapsed">⚠</span>
-            <span v-else>Delays</span>
-          </span>
-          <span class="delay-panel__count" v-if="delayPanelCollapsed">{{ delayedVehicles.length }}</span>
-          <span class="delay-panel__toggle" :class="{ 'delay-panel__toggle--open': !delayPanelCollapsed }">›</span>
-        </div>
-        <div class="delay-panel__list" v-show="!delayPanelCollapsed">
-          <div
-            v-for="v in delayedVehicles"
-            :key="v.id"
-            class="delay-row"
-            :class="{ 'delay-row--cancelled': v.cancelled }"
-            @click="trainMapRef?.focusVehicle(v.id)"
-          >
-            <span class="delay-row__label">{{ v.vehicleId ?? '—' }}</span>
-            <span class="delay-row__sep">·</span>
-            <span class="delay-row__route">{{ routeCode(v.routeId) }}</span>
-            <span class="delay-row__sep">·</span>
-            <span class="delay-row__badge" :class="v.cancelled ? 'badge--cancelled' : 'badge--delayed'">
-              {{ v.cancelled ? 'CANC' : `+${Math.round(v.delay / 60)}m` }}
+      <div class="top-right-stack">
+        <div class="alerts-panel" :class="{ 'alerts-panel--collapsed': alertsPanelCollapsed }" v-if="sortedAlerts.length">
+          <div class="delay-panel__title" @click="alertsPanelCollapsed = !alertsPanelCollapsed">
+            <span class="delay-panel__title-text">
+              <span v-if="alertsPanelCollapsed">🛈</span>
+              <span v-else>Service Alerts</span>
             </span>
+            <span class="delay-panel__count" v-if="alertsPanelCollapsed">{{ sortedAlerts.length }}</span>
+            <span class="delay-panel__toggle" :class="{ 'delay-panel__toggle--open': !alertsPanelCollapsed }">›</span>
+          </div>
+          <div class="delay-panel__list" v-show="!alertsPanelCollapsed">
+            <div
+              v-for="a in sortedAlerts"
+              :key="a.id"
+              class="alert-row"
+              @click="toggleAlert(a.id)"
+            >
+              <div class="alert-row__top">
+                <span class="alert-badge" :class="effectClass(a.effect)">{{ effectLabel(a.effect) }}</span>
+                <span class="alert-row__header">{{ a.header }}</span>
+              </div>
+              <div v-if="expandedAlerts.has(a.id)" class="alert-row__desc">
+                {{ a.description }}
+                <a v-if="a.url" :href="a.url" target="_blank" rel="noopener" class="alert-row__link" @click.stop>More info →</a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="delay-panel" :class="{ 'delay-panel--collapsed': delayPanelCollapsed }" v-if="delayedVehicles.length">
+          <div class="delay-panel__title" @click="delayPanelCollapsed = !delayPanelCollapsed">
+            <span class="delay-panel__title-text">
+              <span v-if="delayPanelCollapsed">⚠</span>
+              <span v-else>Delays</span>
+            </span>
+            <span class="delay-panel__count" v-if="delayPanelCollapsed">{{ delayedVehicles.length }}</span>
+            <span class="delay-panel__toggle" :class="{ 'delay-panel__toggle--open': !delayPanelCollapsed }">›</span>
+          </div>
+          <div class="delay-panel__list" v-show="!delayPanelCollapsed">
+            <div
+              v-for="v in delayedVehicles"
+              :key="v.id"
+              class="delay-row"
+              :class="{ 'delay-row--cancelled': v.cancelled }"
+              @click="trainMapRef?.focusVehicle(v.id)"
+            >
+              <span class="delay-row__label">{{ v.vehicleId ?? '—' }}</span>
+              <span class="delay-row__sep">·</span>
+              <span class="delay-row__route">{{ routeCode(v.routeId) }}</span>
+              <span class="delay-row__sep">·</span>
+              <span class="delay-row__badge" :class="v.cancelled ? 'badge--cancelled' : 'badge--delayed'">
+                {{ v.cancelled ? 'CANC' : `+${Math.round(v.delay / 60)}m` }}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -107,6 +198,25 @@
           <div v-if="selectedFleet" class="tdp-consist">
             <div class="tdp-section-label">Consist</div>
             <div class="tdp-consist-list">{{ selectedFleet.consist.join(' · ') }}</div>
+          </div>
+
+          <div v-if="selectedVehicleAlerts.length" class="tdp-alerts">
+            <div class="tdp-section-label" style="padding: 12px 14px 6px">Alerts</div>
+            <div
+              v-for="a in selectedVehicleAlerts"
+              :key="a.id"
+              class="alert-row alert-row--panel"
+              @click="toggleAlert(a.id)"
+            >
+              <div class="alert-row__top">
+                <span class="alert-badge" :class="effectClass(a.effect)">{{ effectLabel(a.effect) }}</span>
+                <span class="alert-row__header">{{ a.header }}</span>
+              </div>
+              <div v-if="expandedAlerts.has(a.id)" class="alert-row__desc">
+                {{ a.description }}
+                <a v-if="a.url" :href="a.url" target="_blank" rel="noopener" class="alert-row__link" @click.stop>More info →</a>
+              </div>
+            </div>
           </div>
 
           <!-- Stop timeline -->
@@ -175,7 +285,32 @@
               <div class="tdp-vehicle-id">{{ selectedStop.name }}</div>
               <div class="tdp-headsign">Next departures</div>
             </div>
+            <button
+              class="tdp-pin"
+              :class="{ 'tdp-pin--active': isStopPinned(selectedStop) }"
+              @click="togglePinStop(selectedStop)"
+              :aria-label="isStopPinned(selectedStop) ? 'Unpin station' : 'Pin station'"
+            >★</button>
             <button class="tdp-close" @click="selectedStopId = null">✕</button>
+          </div>
+
+          <div v-if="selectedStopAlerts.length" class="tdp-alerts">
+            <div class="tdp-section-label" style="padding: 12px 14px 6px">Alerts</div>
+            <div
+              v-for="a in selectedStopAlerts"
+              :key="a.id"
+              class="alert-row alert-row--panel"
+              @click="toggleAlert(a.id)"
+            >
+              <div class="alert-row__top">
+                <span class="alert-badge" :class="effectClass(a.effect)">{{ effectLabel(a.effect) }}</span>
+                <span class="alert-row__header">{{ a.header }}</span>
+              </div>
+              <div v-if="expandedAlerts.has(a.id)" class="alert-row__desc">
+                {{ a.description }}
+                <a v-if="a.url" :href="a.url" target="_blank" rel="noopener" class="alert-row__link" @click.stop>More info →</a>
+              </div>
+            </div>
           </div>
 
           <div v-if="stopDepartures.loading && !stopDepartures.departures.length" class="tdp-tl-loading">
@@ -210,6 +345,14 @@
         </div>
       </Transition>
     </div>
+
+    <div v-if="updateAvailable" class="pwa-toast">
+      <span>New version available</span>
+      <button class="pwa-toast__btn" @click="applyUpdate">Reload</button>
+    </div>
+    <div v-else-if="offlineReady" class="pwa-toast pwa-toast--info">
+      App ready to work offline
+    </div>
   </div>
 </template>
 
@@ -221,6 +364,8 @@ import Tag from 'primevue/tag'
 import ProgressBar from 'primevue/progressbar'
 import SelectButton from 'primevue/selectbutton'
 import AutoComplete from 'primevue/autocomplete'
+import Popover from 'primevue/popover'
+import { registerSW } from 'virtual:pwa-register'
 import TrainMap from './components/TrainMap.vue'
 import { getFleetInfo } from './data/metro-fleet.js'
 import { getVLineFleetInfo } from './data/vline-fleet.js'
@@ -234,7 +379,139 @@ const networkOptions = [
 ]
 
 const trainMapRef = ref(null)
+const favouritesPopoverRef = ref(null)
 const network = ref('vline')
+
+const updateAvailable = ref(false)
+const offlineReady = ref(false)
+const updateSW = registerSW({
+  onNeedRefresh() { updateAvailable.value = true },
+  onOfflineReady() {
+    offlineReady.value = true
+    setTimeout(() => { offlineReady.value = false }, 4000)
+  },
+})
+
+function applyUpdate() {
+  updateSW(true)
+}
+
+function toggleFavouritesPopover(event) {
+  favouritesPopoverRef.value?.toggle(event)
+}
+
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+const PINNED_STOPS_KEY = 'trainTracker.pinnedStops.v1'
+const RECENT_STOPS_KEY = 'trainTracker.recentStops.v1'
+const RECENT_STOPS_MAX = 8
+
+const pinnedStops = ref(loadJSON(PINNED_STOPS_KEY, []))
+const recentStops = ref(loadJSON(RECENT_STOPS_KEY, []))
+
+watch(pinnedStops, (v) => localStorage.setItem(PINNED_STOPS_KEY, JSON.stringify(v)), { deep: true })
+watch(recentStops, (v) => localStorage.setItem(RECENT_STOPS_KEY, JSON.stringify(v)), { deep: true })
+
+const hasFavourites = computed(() => pinnedStops.value.length > 0)
+
+function stopKey(s) {
+  return `${s.network}:${s.id}`
+}
+
+function isStopPinned(stop) {
+  if (!stop) return false
+  return pinnedStops.value.some(s => s.id === stop.id && s.network === network.value)
+}
+
+function togglePinStop(stop) {
+  if (!stop) return
+  const idx = pinnedStops.value.findIndex(s => s.id === stop.id && s.network === (stop.network ?? network.value))
+  if (idx >= 0) {
+    pinnedStops.value = pinnedStops.value.filter((_, i) => i !== idx)
+  } else {
+    pinnedStops.value = [{ id: stop.id, name: stop.name, network: stop.network ?? network.value }, ...pinnedStops.value]
+  }
+}
+
+function recordRecentStop(stop) {
+  const filtered = recentStops.value.filter(s => !(s.id === stop.id && s.network === network.value))
+  recentStops.value = [{ id: stop.id, name: stop.name, network: network.value }, ...filtered].slice(0, RECENT_STOPS_MAX)
+}
+
+const recentStopsForDisplay = computed(() =>
+  recentStops.value.filter(r => !pinnedStops.value.some(p => p.id === r.id && p.network === r.network))
+)
+
+const userLocation = ref(null)
+const locating = ref(false)
+const locationError = ref(null)
+
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000
+  const toRad = d => d * Math.PI / 180
+  const dLat = toRad(lat2 - lat1)
+  const dLng = toRad(lng2 - lng1)
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(a))
+}
+
+function formatDistance(m) {
+  return m < 1000 ? `${Math.round(m)}m` : `${(m / 1000).toFixed(1)}km`
+}
+
+function useMyLocation() {
+  if (!navigator.geolocation) { locationError.value = 'Geolocation not supported'; return }
+  locating.value = true
+  locationError.value = null
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      userLocation.value = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+      locating.value = false
+    },
+    (err) => {
+      locationError.value = err.code === err.PERMISSION_DENIED ? 'Location permission denied' : 'Could not get location'
+      locating.value = false
+    },
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+  )
+}
+
+const nearbyStops = computed(() => {
+  if (!userLocation.value) return []
+  return stops.value
+    .filter(s => isDisplayStop(s, network.value))
+    .map(s => ({
+      id: s.id,
+      name: s.name,
+      network: network.value,
+      distanceMeters: haversineMeters(userLocation.value.lat, userLocation.value.lng, s.lat, s.lng),
+    }))
+    .sort((a, b) => a.distanceMeters - b.distanceMeters)
+    .slice(0, 3)
+})
+
+async function goToFavourite(item) {
+  favouritesPopoverRef.value?.hide()
+  if (network.value !== item.network) {
+    network.value = item.network
+    await new Promise(resolve => {
+      const timeout = setTimeout(() => { unwatch(); resolve() }, 4000)
+      const unwatch = watch(stops, (list) => {
+        if (list.some(s => s.id === item.id)) { clearTimeout(timeout); unwatch(); resolve() }
+      })
+    })
+  }
+  onStopSelected(item.id)
+  const coords = stopCoordsMap.value[item.id]
+  if (coords) trainMapRef.value?.focusStop(coords.lat, coords.lng)
+}
 const networkColor = computed(() => NETWORK_COLORS[network.value])
 const vehicleNoun = computed(() => network.value === 'tram' ? 'trams' : 'trains')
 
@@ -277,6 +554,70 @@ function onSearchSelect(event) {
   searchResults.value = []
 }
 
+const serviceAlerts = ref([])
+const alertsPanelCollapsed = ref(false)
+const expandedAlerts = ref(new Set())
+
+function toggleAlert(id) {
+  const next = new Set(expandedAlerts.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedAlerts.value = next
+}
+
+const ALERT_SEVERITY_ORDER = {
+  NO_SERVICE: 0, SIGNIFICANT_DELAYS: 1, REDUCED_SERVICE: 2, DETOUR: 3,
+  STOP_MOVED: 4, MODIFIED_SERVICE: 5, ACCESSIBILITY_ISSUE: 6,
+  ADDITIONAL_SERVICE: 7, OTHER_EFFECT: 8, UNKNOWN_EFFECT: 9, NO_EFFECT: 10,
+}
+
+const sortedAlerts = computed(() =>
+  [...serviceAlerts.value].sort((a, b) =>
+    (ALERT_SEVERITY_ORDER[a.effect] ?? 99) - (ALERT_SEVERITY_ORDER[b.effect] ?? 99)
+  )
+)
+
+const ALERT_EFFECT_LABELS = {
+  NO_SERVICE: 'No service', REDUCED_SERVICE: 'Reduced service', SIGNIFICANT_DELAYS: 'Delays',
+  DETOUR: 'Diversion', ADDITIONAL_SERVICE: 'Extra service', MODIFIED_SERVICE: 'Service change',
+  STOP_MOVED: 'Stop moved', ACCESSIBILITY_ISSUE: 'Accessibility',
+}
+
+function effectLabel(effect) {
+  return ALERT_EFFECT_LABELS[effect] ?? 'Notice'
+}
+
+function effectClass(effect) {
+  if (effect === 'NO_SERVICE' || effect === 'SIGNIFICANT_DELAYS') return 'alert-badge--severe'
+  if (['REDUCED_SERVICE', 'DETOUR', 'STOP_MOVED', 'MODIFIED_SERVICE'].includes(effect)) return 'alert-badge--warn'
+  return 'alert-badge--info'
+}
+
+function alertsForRoute(routeId) {
+  if (!routeId) return []
+  return serviceAlerts.value.filter(a => a.informed.some(ie => ie.routeId === routeId))
+}
+
+function alertsForStop(stopId) {
+  if (!stopId) return []
+  return serviceAlerts.value.filter(a => a.informed.some(ie => ie.stopIds?.includes(stopId)))
+}
+
+const selectedVehicleAlerts = computed(() => alertsForRoute(selectedVehicle.value?.routeId))
+const selectedStopAlerts = computed(() => alertsForStop(selectedStopId.value))
+
+async function fetchServiceAlerts() {
+  try {
+    const res = await fetch(`/api/service-alerts?network=${network.value}`)
+    if (!res.ok) { serviceAlerts.value = []; return }
+    const data = await res.json()
+    serviceAlerts.value = data.alerts ?? []
+  } catch (e) {
+    console.warn('Service alerts fetch failed:', e.message)
+    serviceAlerts.value = []
+  }
+}
+
 const delayedVehicles = computed(() => {
   return vehicles.value
     .filter(v => v.cancelled || (v.delay != null && v.delay >= 60))
@@ -316,6 +657,10 @@ async function fetchStopDepartures(stopId) {
 function onStopSelected(id) {
   selectedStopId.value = id
   selectedVehicleId.value = null
+  if (id) {
+    const stop = stops.value.find(s => s.id === id)
+    if (stop) recordRecentStop(stop)
+  }
 }
 
 watch(selectedStopId, (id) => fetchStopDepartures(id))
@@ -594,18 +939,21 @@ watch(selectedVehicle, (v) => {
 watch(network, () => {
   vehicles.value = []
   stops.value = []
+  serviceAlerts.value = []
   tripSchedule.value = { stops: [], loading: false, headsign: null }
   tripShape.value = null
   selectedVehicleId.value = null
   selectedStopId.value = null
   refresh()
   fetchStops()
+  fetchServiceAlerts()
 })
 
 onMounted(() => {
   refresh()
   fetchStops()
-  pollInterval = setInterval(refresh, 30_000)
+  fetchServiceAlerts()
+  pollInterval = setInterval(() => { refresh(); fetchServiceAlerts() }, 30_000)
 })
 
 onUnmounted(() => clearInterval(pollInterval))
@@ -638,8 +986,10 @@ onUnmounted(() => clearInterval(pollInterval))
 
 .toolbar-end {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
+  justify-content: flex-end;
+  gap: 0.5rem 0.75rem;
 }
 
 .last-updated {
@@ -666,21 +1016,33 @@ onUnmounted(() => clearInterval(pollInterval))
   height: 3px !important;
 }
 
-.delay-panel {
+.top-right-stack {
   position: absolute;
   top: 12px;
   right: 12px;
   z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-height: calc(100vh - 24px);
+}
+
+.alerts-panel,
+.delay-panel {
   background: rgba(15, 15, 20, 0.88);
   backdrop-filter: blur(8px);
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 8px;
   min-width: 160px;
-  max-height: calc(100vh - 100px);
+  max-width: 320px;
+  max-height: 45vh;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 4px 0 0;
 }
 
+.alerts-panel--collapsed,
 .delay-panel--collapsed {
   min-width: unset;
   padding: 0;
@@ -759,6 +1121,7 @@ onUnmounted(() => clearInterval(pollInterval))
   gap: 12px;
   padding: 4px 12px;
   font-size: 0.8rem;
+  min-width: 0;
 }
 
 .delay-row {
@@ -772,17 +1135,23 @@ onUnmounted(() => clearInterval(pollInterval))
 .delay-row__label {
   color: #e2e8f0;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .delay-row__route {
   color: #6b7280;
   font-size: 0.72rem;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .delay-row__sep {
   color: #374151;
   font-size: 0.72rem;
+  flex-shrink: 0;
 }
 
 .delay-row--cancelled .delay-row__label {
@@ -800,6 +1169,77 @@ onUnmounted(() => clearInterval(pollInterval))
 
 .badge--delayed   { background: #92400e; color: #fbbf24; }
 .badge--cancelled { background: #7f1d1d; color: #fca5a5; }
+
+/* Service alerts */
+.alert-row {
+  padding: 6px 12px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.alert-row:last-child {
+  border-bottom: none;
+}
+
+.alert-row:hover {
+  background: rgba(255,255,255,0.05);
+}
+
+.alert-row__top {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.alert-row__header {
+  color: #d1d5db;
+  line-height: 1.35;
+}
+
+.alert-badge {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.alert-badge--severe { background: #7f1d1d; color: #fca5a5; }
+.alert-badge--warn   { background: #92400e; color: #fbbf24; }
+.alert-badge--info   { background: #1e3a8a; color: #93c5fd; }
+
+.alert-row__desc {
+  margin-top: 5px;
+  padding-right: 4px;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: #6b7280;
+}
+
+.alert-row__link {
+  display: inline-block;
+  margin-top: 4px;
+  color: #93c5fd;
+  text-decoration: none;
+  font-size: 0.72rem;
+}
+
+.alert-row__link:hover {
+  text-decoration: underline;
+}
+
+.tdp-alerts {
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  padding-bottom: 6px;
+}
+
+.alert-row--panel {
+  padding: 6px 14px;
+}
 
 /* Left detail panel */
 .panel-slide-enter-active,
@@ -964,6 +1404,159 @@ onUnmounted(() => clearInterval(pollInterval))
 .tdp-close:hover {
   background: rgba(255,255,255,0.12);
   color: #e2e8f0;
+}
+
+.tdp-pin {
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.06);
+  border: none;
+  color: #6b7280;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+  margin-top: 2px;
+  margin-right: 6px;
+}
+
+.tdp-pin:hover {
+  background: rgba(255,255,255,0.12);
+  color: #e2e8f0;
+}
+
+.tdp-pin--active {
+  color: #fbbf24;
+}
+
+/* Favourites popover */
+.fav-popover {
+  min-width: 220px;
+  max-width: 280px;
+}
+
+.fav-section + .fav-section {
+  margin-top: 10px;
+}
+
+.fav-section__title {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+
+.fav-section__title--row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.fav-relocate {
+  background: none;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 2px;
+}
+
+.fav-relocate:hover {
+  color: #d1d5db;
+}
+
+.fav-locate-btn {
+  width: 100%;
+  background: rgba(255,255,255,0.05);
+  border: 1px dashed rgba(255,255,255,0.15);
+  border-radius: 6px;
+  color: #9ca3af;
+  font-family: inherit;
+  font-size: 0.78rem;
+  padding: 7px 10px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.fav-locate-btn:hover {
+  background: rgba(255,255,255,0.08);
+  color: #e2e8f0;
+}
+
+.fav-locate-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.fav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 2px;
+  font-size: 0.82rem;
+}
+
+.fav-item__link {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  color: #d1d5db;
+}
+
+.fav-item__link:hover {
+  color: #f1f5f9;
+}
+
+.fav-item__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fav-item__net {
+  flex-shrink: 0;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  color: #4b5563;
+}
+
+.fav-item__pin {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #374151;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px;
+}
+
+.fav-item__pin:hover {
+  color: #9ca3af;
+}
+
+.fav-item__pin--active {
+  color: #fbbf24;
+}
+
+.fav-empty {
+  font-size: 0.78rem;
+  color: #6b7280;
+  font-style: italic;
+  max-width: 200px;
+  line-height: 1.5;
 }
 
 .tdp-consist {
@@ -1163,4 +1756,100 @@ onUnmounted(() => clearInterval(pollInterval))
 
 .tdp-tl-delay--late  { background: #92400e; color: #fbbf24; }
 .tdp-tl-delay--early { background: #14532d; color: #4ade80; }
+
+.pwa-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(15, 15, 20, 0.95);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 0.82rem;
+  color: #d1d5db;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+  white-space: nowrap;
+}
+
+.pwa-toast--info {
+  color: #9ca3af;
+}
+
+.pwa-toast__btn {
+  background: #a855f7;
+  border: none;
+  color: #0a0a0f;
+  font-weight: 700;
+  font-size: 0.78rem;
+  font-family: inherit;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.pwa-toast__btn:hover {
+  background: #c084fc;
+}
+
+/* Mobile */
+@media (max-width: 640px) {
+  .app-toolbar {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .app-title {
+    font-size: 0.95rem;
+  }
+
+  .toolbar-end {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .vehicle-search {
+    flex: 1 1 auto;
+    order: 1;
+  }
+
+  .vehicle-search input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .last-updated {
+    display: none;
+  }
+
+  .top-right-stack {
+    top: 8px;
+    right: 8px;
+    max-width: min(220px, 55vw);
+  }
+
+  .alerts-panel,
+  .delay-panel {
+    min-width: 0;
+    max-width: min(220px, 55vw);
+    font-size: 0.9em;
+  }
+
+  .train-detail-panel {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    width: auto;
+  }
+
+  .fav-popover {
+    min-width: 0;
+    max-width: min(260px, 80vw);
+  }
+}
 </style>
