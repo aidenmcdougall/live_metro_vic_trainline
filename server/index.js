@@ -3,7 +3,7 @@ import cors from 'cors'
 import axios from 'axios'
 import GtfsRealtimeBindings from 'gtfs-realtime-bindings'
 import AdmZip from 'adm-zip'
-import { readFileSync, writeFileSync, renameSync } from 'fs'
+import { readFileSync, writeFileSync, renameSync, existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { config } from 'dotenv'
@@ -74,8 +74,13 @@ const GTFS_ETAG_PATH = join(__dirname, 'gtfs.zip.etag')
 const GTFS_REFRESH_INTERVAL_MS = 24 * 3600 * 1000
 
 async function refreshGtfsZip() {
+  // An etag is only meaningful if we actually have the zip it refers to — otherwise a stale
+  // etag (e.g. committed to git while gtfs.zip itself is gitignored) would make a fresh
+  // checkout trust a 304 response and end up with no zip file to parse at all.
   let previousEtag = null
-  try { previousEtag = readFileSync(GTFS_ETAG_PATH, 'utf8').trim() } catch {}
+  if (existsSync(GTFS_ZIP_PATH)) {
+    try { previousEtag = readFileSync(GTFS_ETAG_PATH, 'utf8').trim() } catch {}
+  }
 
   try {
     const response = await axios.get(GTFS_DOWNLOAD_URL, {
@@ -687,3 +692,12 @@ app.get('/api/stop-departures', async (req, res) => {
   res.json({ departures })
 })
 
+// In production the built client (client/dist) is served from this same process/port,
+// so the deployed app is a single web service with no cross-origin API calls.
+const clientDist = join(__dirname, '../client/dist')
+if (existsSync(clientDist)) {
+  app.use(express.static(clientDist))
+  app.get(/^(?!\/api).*/, (_req, res) => {
+    res.sendFile(join(clientDist, 'index.html'))
+  })
+}
