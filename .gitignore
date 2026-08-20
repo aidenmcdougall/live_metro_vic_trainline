@@ -4,3 +4,4 @@ dist/
 client/dev-dist/
 server/gtfs.zip
 server/gtfs.zip.etag
+server/gtfs-*.zip
