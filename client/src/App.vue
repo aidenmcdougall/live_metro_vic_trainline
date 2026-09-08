@@ -1002,7 +1002,7 @@ onUnmounted(() => clearInterval(pollInterval))
 }
 
 .vehicle-search input {
-  width: 180px;
+  width: 260px;
 }
 
 .map-wrapper {
