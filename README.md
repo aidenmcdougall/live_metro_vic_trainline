@@ -31,6 +31,7 @@ A real-time (every 30s) map of Victoria's train network, showing live positions 
 
 - Node.js 18+
 - A [Transport Victoria Open Data](https://opendata.transport.vic.gov.au/) API key (subscribe to the GTFS Realtime V/Line and Metro products)
+- A [CARTO basemaps](https://carto.com/basemaps/apikey/) API key (free tier, used for the map tiles)
 
 ### Setup
 
@@ -45,6 +46,7 @@ Create a `.env` file in the project root:
 ```env
 API_KEY=your_transport_vic_api_key_here
 PORT=3001
+VITE_CARTO_API_KEY=your_carto_api_key_here
 ```
 
 ### Run
