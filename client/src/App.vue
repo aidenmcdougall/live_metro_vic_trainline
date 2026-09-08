@@ -111,57 +111,61 @@
 
       <div class="top-right-stack">
         <div class="alerts-panel" :class="{ 'alerts-panel--collapsed': alertsPanelCollapsed }" v-if="sortedAlerts.length">
-          <div class="delay-panel__title" @click="alertsPanelCollapsed = !alertsPanelCollapsed">
-            <span class="delay-panel__title-text">
-              <span v-if="alertsPanelCollapsed">🛈</span>
-              <span v-else>Service Alerts</span>
-            </span>
-            <span class="delay-panel__count" v-if="alertsPanelCollapsed">{{ sortedAlerts.length }}</span>
-            <span class="delay-panel__toggle" :class="{ 'delay-panel__toggle--open': !alertsPanelCollapsed }">›</span>
-          </div>
-          <div class="delay-panel__list" v-show="!alertsPanelCollapsed">
-            <div
-              v-for="a in sortedAlerts"
-              :key="a.id"
-              class="alert-row"
-              @click="toggleAlert(a.id)"
-            >
-              <div class="alert-row__top">
-                <span class="alert-badge" :class="effectClass(a.effect)">{{ effectLabel(a.effect) }}</span>
-                <span class="alert-row__header">{{ a.header }}</span>
-              </div>
-              <div v-if="expandedAlerts.has(a.id)" class="alert-row__desc">
-                {{ a.description }}
-                <a v-if="a.url" :href="a.url" target="_blank" rel="noopener" class="alert-row__link" @click.stop>More info →</a>
+          <div class="delay-panel__scroll">
+            <div class="delay-panel__title" @click="alertsPanelCollapsed = !alertsPanelCollapsed">
+              <span class="delay-panel__title-text">
+                <span v-if="alertsPanelCollapsed">🛈</span>
+                <span v-else>Service Alerts</span>
+              </span>
+              <span class="delay-panel__count" v-if="alertsPanelCollapsed">{{ sortedAlerts.length }}</span>
+              <span class="delay-panel__toggle" :class="{ 'delay-panel__toggle--open': !alertsPanelCollapsed }">›</span>
+            </div>
+            <div class="delay-panel__list" v-show="!alertsPanelCollapsed">
+              <div
+                v-for="a in sortedAlerts"
+                :key="a.id"
+                class="alert-row"
+                @click="toggleAlert(a.id)"
+              >
+                <div class="alert-row__top">
+                  <span class="alert-badge" :class="effectClass(a.effect)">{{ effectLabel(a.effect) }}</span>
+                  <span class="alert-row__header">{{ a.header }}</span>
+                </div>
+                <div v-if="expandedAlerts.has(a.id)" class="alert-row__desc">
+                  {{ a.description }}
+                  <a v-if="a.url" :href="a.url" target="_blank" rel="noopener" class="alert-row__link" @click.stop>More info →</a>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
         <div class="delay-panel" :class="{ 'delay-panel--collapsed': delayPanelCollapsed }" v-if="delayedVehicles.length">
-          <div class="delay-panel__title" @click="delayPanelCollapsed = !delayPanelCollapsed">
-            <span class="delay-panel__title-text">
-              <span v-if="delayPanelCollapsed">⚠</span>
-              <span v-else>Delays</span>
-            </span>
-            <span class="delay-panel__count" v-if="delayPanelCollapsed">{{ delayedVehicles.length }}</span>
-            <span class="delay-panel__toggle" :class="{ 'delay-panel__toggle--open': !delayPanelCollapsed }">›</span>
-          </div>
-          <div class="delay-panel__list" v-show="!delayPanelCollapsed">
-            <div
-              v-for="v in delayedVehicles"
-              :key="v.id"
-              class="delay-row"
-              :class="{ 'delay-row--cancelled': v.cancelled }"
-              @click="trainMapRef?.focusVehicle(v.id)"
-            >
-              <span class="delay-row__label">{{ v.vehicleId ?? '—' }}</span>
-              <span class="delay-row__sep">·</span>
-              <span class="delay-row__route">{{ routeCode(v.routeId) }}</span>
-              <span class="delay-row__sep">·</span>
-              <span class="delay-row__badge" :class="v.cancelled ? 'badge--cancelled' : 'badge--delayed'">
-                {{ v.cancelled ? 'CANC' : `+${Math.round(v.delay / 60)}m` }}
+          <div class="delay-panel__scroll">
+            <div class="delay-panel__title" @click="delayPanelCollapsed = !delayPanelCollapsed">
+              <span class="delay-panel__title-text">
+                <span v-if="delayPanelCollapsed">⚠</span>
+                <span v-else>Delays</span>
               </span>
+              <span class="delay-panel__count" v-if="delayPanelCollapsed">{{ delayedVehicles.length }}</span>
+              <span class="delay-panel__toggle" :class="{ 'delay-panel__toggle--open': !delayPanelCollapsed }">›</span>
+            </div>
+            <div class="delay-panel__list" v-show="!delayPanelCollapsed">
+              <div
+                v-for="v in delayedVehicles"
+                :key="v.id"
+                class="delay-row"
+                :class="{ 'delay-row--cancelled': v.cancelled }"
+                @click="trainMapRef?.focusVehicle(v.id)"
+              >
+                <span class="delay-row__label">{{ v.vehicleId ?? '—' }}</span>
+                <span class="delay-row__sep">·</span>
+                <span class="delay-row__route">{{ routeCode(v.routeId) }}</span>
+                <span class="delay-row__sep">·</span>
+                <span class="delay-row__badge" :class="v.cancelled ? 'badge--cancelled' : 'badge--delayed'">
+                  {{ v.cancelled ? 'CANC' : `+${Math.round(v.delay / 60)}m` }}
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -1036,16 +1040,18 @@ onUnmounted(() => clearInterval(pollInterval))
   border-radius: 8px;
   min-width: 160px;
   max-width: 320px;
-  max-height: 45vh;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 4px 0 0;
+  overflow: hidden;
 }
 
 .alerts-panel--collapsed,
 .delay-panel--collapsed {
   min-width: unset;
-  padding: 0;
+}
+
+.delay-panel__scroll {
+  max-height: 45vh;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .delay-panel__title {
@@ -1062,6 +1068,10 @@ onUnmounted(() => clearInterval(pollInterval))
   margin-bottom: 0;
   cursor: pointer;
   user-select: none;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: rgb(17, 17, 22);
 }
 
 .delay-panel--collapsed .delay-panel__title {
