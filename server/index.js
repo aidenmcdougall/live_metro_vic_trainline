@@ -307,6 +307,16 @@ async function loadGtfsStatic(network) {
     }
   }
 
+  // routes → { routeId: routeName }, for the "lines through this station" list.
+  const routeNames = {}
+  const routesEntry = inner.getEntry('routes.txt')
+  if (routesEntry) {
+    for (const r of parseGtfsCsv(routesEntry.getData().toString('utf8'))) {
+      if (!r.route_id) continue
+      routeNames[r.route_id] = r.route_short_name || r.route_long_name || r.route_id
+    }
+  }
+
   // shapes → [[lat, lng], ...] sorted by sequence.
   // shapes.txt can be enormous for a statewide network (millions of survey-grade points), so this
   // skips both the generic per-row-object CSV parser AND ever materializing a full decompressed
@@ -365,7 +375,7 @@ async function loadGtfsStatic(network) {
     flushShape(currentId, currentPoints)
   }
 
-  gtfsStatic[network] = { schedule, tripInfo, stopNames, shapes, calendar, calendarExceptions, stopTripIndex, parentStationStops }
+  gtfsStatic[network] = { schedule, tripInfo, stopNames, shapes, calendar, calendarExceptions, stopTripIndex, parentStationStops, routeNames }
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
   const shapeCount = Object.keys(shapes).length
   console.log(`GTFS static ready (${network}): ${Object.keys(schedule).length} trips, ${stopTimeCount} stop times, ${shapeCount} shapes [${elapsed}s]`)
@@ -511,7 +521,7 @@ app.get('/api/service-alerts', async (req, res) => {
           informed: (a.informedEntity ?? []).map(ie => ({
             routeId: ie.routeId ?? null,
             stopId: ie.stopId ?? null,
-            stopIds: ie.stopId ? (parentStationStops[ie.stopId] ?? [ie.stopId]) : [],
+            stopIds: ie.stopId ? [ie.stopId, ...(parentStationStops[ie.stopId] ?? [])] : [],
             tripId: ie.trip?.tripId ?? null,
           })),
         }
@@ -582,6 +592,11 @@ app.get('/api/vehicles', async (_req, res) => {
 app.get('/api/trip-updates', async (_req, res) => {
   const network = resolveNetwork(_req.query.network)
 
+  if (!gtfsStatic[network]) {
+    loadGtfsStatic(network).catch(e => console.error(`GTFS ${network} load failed:`, e.message))
+  }
+  const tripInfo = gtfsStatic[network]?.tripInfo ?? {}
+
   try {
     const feed = await fetchTripUpdateFeed(network)
 
@@ -603,6 +618,7 @@ app.get('/api/trip-updates', async (_req, res) => {
       updates[tu.trip.tripId] = {
         delay: delay != null ? Number(delay) : null,
         cancelled,
+        headsign: tripInfo[tu.trip.tripId]?.headsign || null,
         nextStopId: nextStu?.stopId ?? null,
         stops: allStops.map(s => ({
           stopId: s.stopId,
@@ -720,12 +736,29 @@ app.get('/api/stop-departures', async (req, res) => {
 
   if (!gtfsStatic[network]) {
     loadGtfsStatic(network).catch(e => console.error(`GTFS ${network} load failed:`, e.message))
-    return res.json({ departures: [], loading: true })
+    return res.json({ departures: [], routes: [], loading: true })
   }
 
   const gs = gtfsStatic[network]
-  const tripIds = gs.stopTripIndex[stopId] ?? []
-  if (!tripIds.length) return res.json({ departures: [] })
+  // `stopId` from the map is often a station's canonical parent_station id (e.g. "vic:rail:GHY"),
+  // used to dedupe per-platform markers into one — but stop_times.txt (and stopTripIndex, built from
+  // it) only ever references the individual platform stop_ids. Search across the parent id plus all
+  // of its child platforms so a station click actually finds the trips serving it.
+  const candidateStopIds = [stopId, ...(gs.parentStationStops[stopId] ?? [])]
+  const candidateStopIdSet = new Set(candidateStopIds)
+  const tripIds = [...new Set(candidateStopIds.flatMap(id => gs.stopTripIndex[id] ?? []))]
+  if (!tripIds.length) return res.json({ departures: [], routes: [] })
+
+  // Lines serving this station: every distinct route across all trips through it, independent of
+  // time/day filtering below — this is "what lines stop here", not "what's coming up next".
+  const routeIds = new Set()
+  for (const tripId of tripIds) {
+    const routeId = gs.tripInfo[tripId]?.routeId
+    if (routeId) routeIds.add(routeId)
+  }
+  const routes = [...routeIds]
+    .map(routeId => ({ routeId, name: gs.routeNames[routeId] ?? routeId }))
+    .sort((a, b) => a.name.localeCompare(b.name))
 
   const nowMs = Date.now()
   const nowSecs = Math.floor(nowMs / 1000)
@@ -737,7 +770,7 @@ app.get('/api/stop-departures', async (req, res) => {
   const upcoming = []
   for (const tripId of tripIds) {
     // arrSecs/deptSecs live on schedule[tripId] rather than being duplicated per stop as well
-    const st = gs.schedule[tripId]?.find(s => s.stopId === stopId)
+    const st = gs.schedule[tripId]?.find(s => candidateStopIdSet.has(s.stopId))
     if (!st) continue
     const t = st.deptSecs ?? st.arrSecs
     if (t == null) continue
@@ -767,7 +800,7 @@ app.get('/api/stop-departures', async (req, res) => {
     for (const e of feed.entity) {
       const tu = e.tripUpdate
       if (!tu?.trip) continue
-      const stu = (tu.stopTimeUpdate ?? []).find(s => s.stopId === stopId)
+      const stu = (tu.stopTimeUpdate ?? []).find(s => candidateStopIdSet.has(s.stopId))
       if (!stu) continue
       const sr = tu.trip.scheduleRelationship
       realtimeCandidates.push({
@@ -810,7 +843,7 @@ app.get('/api/stop-departures', async (req, res) => {
     }
   })
 
-  res.json({ departures })
+  res.json({ departures, routes })
 })
 
 // In production the built client (client/dist) is served from this same process/port,

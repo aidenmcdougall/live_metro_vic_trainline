@@ -43,7 +43,11 @@ const markerMap = {}
 let stopsLayer = null
 let routePastLine = null
 let routeFutureLine = null
-const STOPS_MIN_ZOOM = 11
+// V/Line's stations are spread across the whole state, so its default view opens far more
+// zoomed out (zoom 9) than Metro/Tram's — a single shared threshold above that default meant
+// V/Line stations never appeared until a rider zoomed in manually. Keyed per network so each
+// one's stops are visible at its own initial zoom.
+const STOPS_MIN_ZOOM = { vline: 8, metro: 11, tram: 12 }
 
 function stopIcon() {
   return L.divIcon({
@@ -86,7 +90,8 @@ function syncRouteLine(polyline) {
 function updateStopsVisibility() {
   if (!map || !stopsLayer) return
   const zoom = map.getZoom()
-  if (zoom >= STOPS_MIN_ZOOM) {
+  const minZoom = STOPS_MIN_ZOOM[props.network] ?? STOPS_MIN_ZOOM.metro
+  if (zoom >= minZoom) {
     if (!map.hasLayer(stopsLayer)) stopsLayer.addTo(map)
   } else {
     if (map.hasLayer(stopsLayer)) stopsLayer.remove()
