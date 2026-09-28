@@ -110,29 +110,30 @@
       <ProgressBar v-if="loading && vehicles.length === 0" mode="indeterminate" class="loading-bar" />
 
       <div class="top-right-stack">
-        <div class="alerts-panel" :class="{ 'alerts-panel--collapsed': alertsPanelCollapsed }" v-if="sortedAlerts.length">
+        <div class="alerts-panel" :class="{ 'alerts-panel--collapsed': alertsPanelCollapsed }" v-if="groupedAlerts.length">
           <div class="delay-panel__scroll">
             <div class="delay-panel__title" @click="alertsPanelCollapsed = !alertsPanelCollapsed">
               <span class="delay-panel__title-text">
                 <span v-if="alertsPanelCollapsed">🛈</span>
                 <span v-else>Service Alerts</span>
               </span>
-              <span class="delay-panel__count" v-if="alertsPanelCollapsed">{{ sortedAlerts.length }}</span>
+              <span class="delay-panel__count" v-if="alertsPanelCollapsed">{{ groupedAlerts.length }}</span>
               <span class="delay-panel__toggle" :class="{ 'delay-panel__toggle--open': !alertsPanelCollapsed }">›</span>
             </div>
             <div class="delay-panel__list" v-show="!alertsPanelCollapsed">
               <div
-                v-for="a in sortedAlerts"
+                v-for="a in groupedAlerts"
                 :key="a.id"
                 class="alert-row"
                 @click="toggleAlert(a.id)"
               >
                 <div class="alert-row__top">
                   <span class="alert-badge" :class="effectClass(a.effect)">{{ effectLabel(a.effect) }}</span>
-                  <span class="alert-row__header">{{ a.header }}</span>
+                  <span class="alert-row__header">{{ alertPrimaryText(a) }}</span>
                 </div>
-                <div v-if="expandedAlerts.has(a.id)" class="alert-row__desc">
-                  {{ a.description }}
+                <div v-if="a.routeCodes.length > 1" class="alert-row__routes">Affects: {{ a.routeCodes.join(', ') }}</div>
+                <div v-if="expandedAlerts.has(a.id) && (!isGenericHeader(a.header) || a.url)" class="alert-row__desc">
+                  <template v-if="!isGenericHeader(a.header)">{{ a.description }}</template>
                   <a v-if="a.url" :href="a.url" target="_blank" rel="noopener" class="alert-row__link" @click.stop>More info →</a>
                 </div>
               </div>
@@ -158,9 +159,9 @@
                 :class="{ 'delay-row--cancelled': v.cancelled }"
                 @click="trainMapRef?.focusVehicle(v.id)"
               >
-                <span class="delay-row__label">{{ v.vehicleId ?? '—' }}</span>
-                <span class="delay-row__sep">·</span>
                 <span class="delay-row__route">{{ routeCode(v.routeId) }}</span>
+                <span class="delay-row__sep">·</span>
+                <span class="delay-row__label">{{ v.headsign ?? v.vehicleId ?? '—' }}</span>
                 <span class="delay-row__sep">·</span>
                 <span class="delay-row__badge" :class="v.cancelled ? 'badge--cancelled' : 'badge--delayed'">
                   {{ v.cancelled ? 'CANC' : `+${Math.round(v.delay / 60)}m` }}
@@ -214,10 +215,10 @@
             >
               <div class="alert-row__top">
                 <span class="alert-badge" :class="effectClass(a.effect)">{{ effectLabel(a.effect) }}</span>
-                <span class="alert-row__header">{{ a.header }}</span>
+                <span class="alert-row__header">{{ alertPrimaryText(a) }}</span>
               </div>
-              <div v-if="expandedAlerts.has(a.id)" class="alert-row__desc">
-                {{ a.description }}
+              <div v-if="expandedAlerts.has(a.id) && (!isGenericHeader(a.header) || a.url)" class="alert-row__desc">
+                <template v-if="!isGenericHeader(a.header)">{{ a.description }}</template>
                 <a v-if="a.url" :href="a.url" target="_blank" rel="noopener" class="alert-row__link" @click.stop>More info →</a>
               </div>
             </div>
@@ -308,12 +309,24 @@
             >
               <div class="alert-row__top">
                 <span class="alert-badge" :class="effectClass(a.effect)">{{ effectLabel(a.effect) }}</span>
-                <span class="alert-row__header">{{ a.header }}</span>
+                <span class="alert-row__header">{{ alertPrimaryText(a) }}</span>
               </div>
-              <div v-if="expandedAlerts.has(a.id)" class="alert-row__desc">
-                {{ a.description }}
+              <div v-if="expandedAlerts.has(a.id) && (!isGenericHeader(a.header) || a.url)" class="alert-row__desc">
+                <template v-if="!isGenericHeader(a.header)">{{ a.description }}</template>
                 <a v-if="a.url" :href="a.url" target="_blank" rel="noopener" class="alert-row__link" @click.stop>More info →</a>
               </div>
+            </div>
+          </div>
+
+          <div v-if="stopDepartures.routes.length" class="tdp-lines">
+            <div class="tdp-section-label" style="padding: 12px 14px 6px">Lines through this station</div>
+            <div class="tdp-lines-row">
+              <span
+                v-for="r in stopDepartures.routes"
+                :key="r.routeId"
+                class="tdp-line-badge"
+                :style="{ background: getVehicleColor(network, r.routeId, networkColor) }"
+              >{{ r.name }}</span>
             </div>
           </div>
 
@@ -581,6 +594,43 @@ const sortedAlerts = computed(() =>
   )
 )
 
+// PTV's feed sends some disruptions with a placeholder header ("Planned Works", "Other Information")
+// that says nothing on its own — the actual detail only lives in the description. Same disruption
+// broadcast across several affected routes also arrives as several separate near-identical alerts
+// (same header+description, different route in `informed`), which otherwise renders as visually
+// duplicate rows.
+const GENERIC_ALERT_HEADERS = new Set(['planned works', 'other information'])
+function isGenericHeader(header) {
+  if (!header) return true
+  const h = header.trim().toLowerCase()
+  return GENERIC_ALERT_HEADERS.has(h) || h.length <= 20
+}
+
+function truncateText(text, max) {
+  if (!text) return ''
+  return text.length > max ? text.slice(0, max).trimEnd() + '…' : text
+}
+
+function alertPrimaryText(a) {
+  return isGenericHeader(a.header) ? (truncateText(a.description, 110) || a.header) : a.header
+}
+
+function groupAlerts(list) {
+  const groups = new Map()
+  for (const a of list) {
+    const key = `${a.header}|${a.description}`
+    if (!groups.has(key)) groups.set(key, { ...a, routeIds: new Set() })
+    const g = groups.get(key)
+    for (const ie of a.informed) if (ie.routeId) g.routeIds.add(ie.routeId)
+  }
+  return [...groups.values()].map(g => ({
+    ...g,
+    routeCodes: [...new Set([...g.routeIds].map(routeCode))].sort(),
+  }))
+}
+
+const groupedAlerts = computed(() => groupAlerts(sortedAlerts.value))
+
 const ALERT_EFFECT_LABELS = {
   NO_SERVICE: 'No service', REDUCED_SERVICE: 'Reduced service', SIGNIFICANT_DELAYS: 'Delays',
   DETOUR: 'Diversion', ADDITIONAL_SERVICE: 'Extra service', MODIFIED_SERVICE: 'Service change',
@@ -642,19 +692,19 @@ const selectedStopId = ref(null)
 const selectedStop = computed(() =>
   stops.value.find(s => s.id === selectedStopId.value) ?? null
 )
-const stopDepartures = ref({ departures: [], loading: false })
+const stopDepartures = ref({ departures: [], routes: [], loading: false })
 
 async function fetchStopDepartures(stopId) {
-  if (!stopId) { stopDepartures.value = { departures: [], loading: false }; return }
-  stopDepartures.value = { departures: stopDepartures.value.departures, loading: true }
+  if (!stopId) { stopDepartures.value = { departures: [], routes: [], loading: false }; return }
+  stopDepartures.value = { ...stopDepartures.value, loading: true }
   try {
     const res = await fetch(`/api/stop-departures?stopId=${encodeURIComponent(stopId)}&network=${network.value}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
-    stopDepartures.value = { departures: data.departures ?? [], loading: data.loading ?? false }
+    stopDepartures.value = { departures: data.departures ?? [], routes: data.routes ?? [], loading: data.loading ?? false }
   } catch (e) {
     console.warn('Stop departures fetch failed:', e.message)
-    stopDepartures.value = { departures: [], loading: false }
+    stopDepartures.value = { departures: [], routes: [], loading: false }
   }
 }
 
@@ -875,6 +925,7 @@ async function refresh() {
       ...v,
       delay: updates[v.tripId]?.delay ?? null,
       cancelled: updates[v.tripId]?.cancelled ?? false,
+      headsign: updates[v.tripId]?.headsign ?? null,
       nextStopId: updates[v.tripId]?.nextStopId ?? null,
       stops: updates[v.tripId]?.stops ?? [],
     }))
@@ -1222,6 +1273,12 @@ onUnmounted(() => clearInterval(pollInterval))
 .alert-badge--warn   { background: #92400e; color: #fbbf24; }
 .alert-badge--info   { background: #1e3a8a; color: #93c5fd; }
 
+.alert-row__routes {
+  margin-top: 3px;
+  font-size: 0.68rem;
+  color: #4b5563;
+}
+
 .alert-row__desc {
   margin-top: 5px;
   padding-right: 4px;
@@ -1351,7 +1408,8 @@ onUnmounted(() => clearInterval(pollInterval))
   font-size: 1.05rem;
   font-weight: 700;
   color: #f1f5f9;
-  word-break: break-all;
+  overflow-wrap: break-word;
+  word-break: normal;
   line-height: 1.3;
   margin-bottom: 8px;
 }
@@ -1653,6 +1711,27 @@ onUnmounted(() => clearInterval(pollInterval))
 .tdp-departure-row.delay-row--cancelled .tdp-val {
   color: #9ca3af;
   text-decoration: line-through;
+}
+
+.tdp-lines {
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  padding-bottom: 10px;
+}
+
+.tdp-lines-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px;
+}
+
+.tdp-line-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #0a0a0f;
+  padding: 3px 8px;
+  border-radius: 20px;
 }
 
 .tdp-tl-loading {
